@@ -370,8 +370,10 @@ type Engine struct {
 	aliasSaveAddFunc func(name, command string) error
 	aliasSaveDelFunc func(name string) error
 
-	bannedWords []string
-	bannedMu    sync.RWMutex
+	bannedWords   []string
+	bannedMu      sync.RWMutex
+	blockPatterns []*regexp.Regexp
+	blockMu       sync.RWMutex
 
 	disabledCmds map[string]bool
 	adminFrom    string           // comma-separated user IDs for privileged commands; "*" = all allowed users; "" = deny
@@ -510,6 +512,7 @@ type interactiveState struct {
 	pending                  *pendingPermission
 	pendingMessages          []queuedMessage // messages queued while session was busy
 	approveAll               bool            // when true, auto-approve all permission requests for this session
+	sessionMode              string          // permission mode fixed at session start (mode_rules); /mode updates it
 	fromVoice                bool            // true if current turn originated from voice transcription
 	sideText                 string
 	deleteMode               *deleteModeState
@@ -1203,6 +1206,39 @@ func (e *Engine) SetBannedWords(words []string) {
 		lower[i] = strings.ToLower(w)
 	}
 	e.bannedWords = lower
+}
+
+// SetBlockReplyPatterns replaces the list of regex patterns that suppress
+// replies. Messages whose content matches any pattern are dropped silently
+// (no agent invocation, no reply). Invalid regexes are skipped with a warning.
+func (e *Engine) SetBlockReplyPatterns(patterns []string) {
+	compiled := make([]*regexp.Regexp, 0, len(patterns))
+	for _, p := range patterns {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		re, err := regexp.Compile(p)
+		if err != nil {
+			slog.Warn("block_reply_patterns: invalid regex ignored", "pattern", p, "error", err)
+			continue
+		}
+		compiled = append(compiled, re)
+	}
+	e.blockMu.Lock()
+	e.blockPatterns = compiled
+	e.blockMu.Unlock()
+}
+
+// matchBlockReplyPattern returns the first regex matching content, or nil.
+func (e *Engine) matchBlockReplyPattern(content string) *regexp.Regexp {
+	e.blockMu.RLock()
+	defer e.blockMu.RUnlock()
+	for _, re := range e.blockPatterns {
+		if re.MatchString(content) {
+			return re
+		}
+	}
+	return nil
 }
 
 // SetRateLimitCfg configures per-session message rate limiting.
@@ -2783,6 +2819,14 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		msg.Content = content
 	}
 
+	// Blocked-reply regex check: matching messages are dropped silently
+	// (no reply, no agent invocation).
+	if re := e.matchBlockReplyPattern(msg.Content); re != nil {
+		slog.Info("message blocked by reply pattern",
+			"pattern", re.String(), "session", msg.SessionKey, "user", msg.UserName)
+		return
+	}
+
 	// Rate limit check (per-user role-based, then global fallback)
 	if !e.checkRateLimit(msg) {
 		slog.Info("message rate limited",
@@ -3648,17 +3692,11 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 		defer ws.EndTurn()
 	}
 
-	// Apply agent mode_rules (e.g. admin private chat -> full-auto), keyed by
-	// message session key. Explicit per-message overrides (cron/API) always
-	// win; messages matching no rule keep the project default mode via the
-	// restore below.
-	if msg.ModeOverride == "" {
-		if mr, ok := e.agent.(interface{ ResolveMode(*Message) string }); ok {
-			if m := mr.ResolveMode(msg); m != "" {
-				msg.ModeOverride = m
-			}
-		}
-	}
+	// Permission mode from conversation-key mode_rules is applied only when the
+	// agent session is (re)started (see getOrCreateInteractiveStateWith). It is
+	// deliberately NOT re-applied per message, so an active session keeps its
+	// mode and /mode can adjust it. Only explicit per-message overrides
+	// (cron/API) are applied here.
 
 	// Apply per-message permission mode override (e.g. cron jobs with mode = "bypassPermissions").
 	// Defer restores only when SetLiveMode succeeds for the override.
@@ -3667,7 +3705,9 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 			if switcher.SetLiveMode(msg.ModeOverride) {
 				defer func() {
 					defaultMode := "default"
-					if ma, ok := e.agent.(interface{ GetMode() string }); ok {
+					if state.sessionMode != "" {
+						defaultMode = state.sessionMode
+					} else if ma, ok := e.agent.(interface{ GetMode() string }); ok {
 						if m := ma.GetMode(); m != "" {
 							defaultMode = m
 						}
@@ -3890,6 +3930,30 @@ func adoptPendingFromPlaceholder(existing, newState *interactiveState) {
 	existing.mu.Unlock()
 }
 
+// startAgentSession starts an agent session, resolving the per-session
+// permission mode from mode_rules BEFORE the session is created. Starting with
+// the resolved mode matters for the app-server backend, where the thread (and
+// its sandbox/approval pair) is created during StartSession; applying the mode
+// only afterwards would leave the thread on the project default mode. Agents
+// that do not implement SessionModeStarter fall back to StartSession plus a
+// post-start SetLiveMode (the caller applies sessionMode via LiveModeSwitcher).
+func (e *Engine) startAgentSession(agent Agent, sessionKey, resumeID string) (AgentSession, string, error) {
+	var sessionMode string
+	if mr, ok := agent.(interface{ ResolveMode(*Message) string }); ok {
+		if m := mr.ResolveMode(&Message{SessionKey: sessionKey}); m != "" {
+			sessionMode = m
+		}
+	}
+	if sessionMode != "" {
+		if ssm, ok := agent.(SessionModeStarter); ok {
+			sess, err := ssm.StartSessionWithMode(e.ctx, resumeID, sessionMode)
+			return sess, sessionMode, err
+		}
+	}
+	sess, err := agent.StartSession(e.ctx, resumeID)
+	return sess, sessionMode, err
+}
+
 // When agentOverride is non-nil it is used instead of e.agent to start the session.
 // ccSessionKey, when non-empty, is used for CC_SESSION_KEY env injection; otherwise sessionKey is used.
 func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, replyCtx any, session *Session, sessions *SessionManager, agentOverride Agent, ccSessionKey string) *interactiveState {
@@ -4009,7 +4073,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	}
 	isResume := startSessionID != ""
 	startAt := time.Now()
-	agentSession, err := agent.StartSession(e.ctx, startSessionID)
+	agentSession, sessionMode, err := e.startAgentSession(agent, sessionKey, startSessionID)
 	startElapsed := time.Since(startAt)
 	if err != nil {
 		// If resume/continue failed, try a fresh session as fallback.
@@ -4022,7 +4086,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 			session.SetAgentSessionID("", agent.Name())
 			sessions.Save()
 			startAt = time.Now()
-			agentSession, err = agent.StartSession(e.ctx, "")
+			agentSession, sessionMode, err = e.startAgentSession(agent, sessionKey, "")
 			startElapsed = time.Since(startAt)
 			if err == nil {
 				slog.Info("fresh session started after resume failure",
@@ -4074,8 +4138,19 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		}
 	}
 
+	// The conversation-key matched mode (mode_rules) was resolved before
+	// StartSession so app-server threads start with the right sandbox. Keep
+	// the live-mode switch as well: it is the only path for agents without
+	// SessionModeStarter, and it keeps the session's mode consistent here.
+	// The session keeps this mode for its lifetime; later /mode changes take
+	// precedence (see applyLiveModeChange).
+	if lm, ok := agentSession.(LiveModeSwitcher); ok && sessionMode != "" {
+		lm.SetLiveMode(sessionMode)
+	}
+
 	newState := &interactiveState{
 		agentSession:     agentSession,
+		sessionMode:      sessionMode,
 		platform:         p,
 		replyCtx:         replyCtx,
 		agent:            agent,
@@ -7915,7 +7990,7 @@ func (e *Engine) dirApply(agent Agent, sessions *SessionManager, interactiveKey,
 			}
 
 			if !e.multiWorkspace {
-				switcher.SetWorkDir(baseDir)
+				e.unbindSendWorkDir(sessionKey)
 			}
 			e.cleanupInteractiveState(interactiveKey)
 
@@ -7928,7 +8003,7 @@ func (e *Engine) dirApply(agent Agent, sessions *SessionManager, interactiveKey,
 				if e.multiWorkspace {
 					e.projectState.ClearWorkspaceDirOverride(interactiveKey)
 				} else {
-					e.projectState.ClearWorkDirOverride()
+					e.projectState.ClearSessionWorkDirOverride(sessionKey)
 				}
 				e.projectState.Save()
 			}
@@ -7984,9 +8059,6 @@ func (e *Engine) dirApply(agent Agent, sessions *SessionManager, interactiveKey,
 		return e.i18n.Tf(MsgDirInvalidPath, newDir), ""
 	}
 
-	if !e.multiWorkspace {
-		switcher.SetWorkDir(newDir)
-	}
 	e.cleanupInteractiveState(interactiveKey)
 
 	s := sessions.GetOrCreateActive(sessionKey)
@@ -7997,11 +8069,14 @@ func (e *Engine) dirApply(agent Agent, sessions *SessionManager, interactiveKey,
 	if e.dirHistory != nil {
 		e.dirHistory.Add(e.name, newDir)
 	}
+	if !e.multiWorkspace {
+		e.bindSendWorkDir(sessionKey, newDir)
+	}
 	if e.projectState != nil {
 		if e.multiWorkspace {
 			e.projectState.SetWorkspaceDirOverride(interactiveKey, newDir)
 		} else {
-			e.projectState.SetWorkDirOverride(newDir)
+			e.projectState.SetSessionWorkDirOverride(sessionKey, newDir)
 		}
 		e.projectState.Save()
 	}
@@ -8022,6 +8097,9 @@ func (e *Engine) cmdDir(p Platform, msg *Message, args []string) {
 	}
 
 	currentDir := switcher.GetWorkDir()
+	if d := e.sendWorkDirForSession(msg.SessionKey); d != "" {
+		currentDir = d
+	}
 
 	if len(args) == 0 {
 		if supportsCards(p) {
@@ -9672,7 +9750,11 @@ func (e *Engine) applyLiveModeChange(sessionKey, mode string) bool {
 	if !ok {
 		return false
 	}
-	return switcher.SetLiveMode(mode)
+	if switcher.SetLiveMode(mode) {
+		state.sessionMode = mode
+		return true
+	}
+	return false
 }
 
 func (e *Engine) cmdQuiet(p Platform, msg *Message, args []string) {
@@ -15467,7 +15549,7 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 	// Use the engine context (not the relay timeout context) so that the
 	// agent process is not killed when the relay deadline fires. The relay
 	// timeout only controls how long we *wait* for the response.
-	agentSession, err := agent.StartSession(e.ctx, session.GetAgentSessionID())
+	agentSession, _, err := e.startAgentSession(agent, relaySessionKey, session.GetAgentSessionID())
 	if err != nil {
 		// Resume failed — fall back to a fresh session so the relay is not
 		// permanently broken by a corrupted/stale session ID.
@@ -15476,7 +15558,7 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 				"relay_key", relaySessionKey, "error", err)
 			session.SetAgentSessionID("", agent.Name())
 			sessions.Save()
-			agentSession, err = agent.StartSession(e.ctx, "")
+			agentSession, _, err = e.startAgentSession(agent, relaySessionKey, "")
 		}
 		if err != nil {
 			return "", fmt.Errorf("start relay session: %w", err)
@@ -16027,6 +16109,26 @@ func (e *Engine) bindSendWorkDir(sessionKey, workDir string) {
 	}
 }
 
+func (e *Engine) unbindSendWorkDir(sessionKey string) {
+	if sessionKey == "" {
+		return
+	}
+	keys := []string{sessionKey}
+	if participantKey := directParticipantKeyForSession(sessionKey); participantKey != "" {
+		keys = append(keys, participantKey)
+	}
+	e.sendWorkDirMu.Lock()
+	defer e.sendWorkDirMu.Unlock()
+	for _, key := range keys {
+		delete(e.sendWorkDirs, key)
+	}
+}
+
+// sendWorkDirForSession returns the effective work directory for a session:
+// runtime bindings from `send --cwd` first, then per-session work_dir_rules
+// from the agent configuration. Rules are resolved deterministically from
+// config on every lookup, so a session key maps to its configured directory
+// from session initialization without needing persisted state.
 func (e *Engine) sendWorkDirForSession(sessionKey string) string {
 	if sessionKey == "" {
 		return ""
@@ -16038,7 +16140,20 @@ func (e *Engine) sendWorkDirForSession(sessionKey string) string {
 		return workDir
 	}
 	if participantKey != "" {
-		return e.sendWorkDirs[participantKey]
+		if workDir := e.sendWorkDirs[participantKey]; workDir != "" {
+			return workDir
+		}
+	}
+	// Per-session /dir overrides persisted in project state (current session only).
+	if e.projectState != nil {
+		if workDir := e.projectState.SessionWorkDirOverride(sessionKey); workDir != "" {
+			return workDir
+		}
+	}
+	if r, ok := e.agent.(interface{ ResolveWorkDir(string) string }); ok {
+		if workDir := r.ResolveWorkDir(sessionKey); workDir != "" {
+			return workDir
+		}
 	}
 	return ""
 }

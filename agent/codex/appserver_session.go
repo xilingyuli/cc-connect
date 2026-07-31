@@ -361,7 +361,7 @@ func (s *appServerSession) threadRequestParams() map[string]any {
 	if model := s.GetModel(); model != "" {
 		params["model"] = model
 	}
-	if approval, sandbox := appServerModeSettings(s.mode); approval != "" {
+	if approval, sandbox := appServerModeSettings(s.mode); approval != nil {
 		params["approvalPolicy"] = approval
 		if sandbox != "" {
 			params["sandbox"] = sandbox
@@ -370,10 +370,26 @@ func (s *appServerSession) threadRequestParams() map[string]any {
 	return params
 }
 
-func appServerModeSettings(mode string) (approval string, sandbox string) {
+// appServerModeSettings maps a permission mode to the codex app-server
+// approvalPolicy + sandbox pair:
+//   - suggest (default): original permissions — read-only sandbox, the model
+//     decides when to ask (on-request)
+//   - auto-edit / full-auto: workspace read/write by default; anything the
+//     sandbox would deny (writes outside the workspace, network, ...) asks
+//     the user for approval (granular sandbox_approval)
+//   - yolo: full permissions, no approval
+func appServerModeSettings(mode string) (approval any, sandbox string) {
 	switch normalizeMode(mode) {
 	case "auto-edit", "full-auto":
-		return "never", "workspace-write"
+		return map[string]any{
+			"granular": map[string]any{
+				"sandbox_approval":    true,
+				"rules":               false,
+				"skill_approval":      false,
+				"request_permissions": false,
+				"mcp_elicitations":    false,
+			},
+		}, "workspace-write"
 	case "yolo":
 		return "never", "danger-full-access"
 	default:
@@ -501,7 +517,7 @@ func (s *appServerSession) Send(prompt string, images []core.ImageAttachment, fi
 	if effort := s.GetReasoningEffort(); effort != "" {
 		params["effort"] = effort
 	}
-	if approval, _ := appServerModeSettings(s.mode); approval != "" {
+	if approval, _ := appServerModeSettings(s.mode); approval != nil {
 		params["approvalPolicy"] = approval
 	}
 
@@ -1294,15 +1310,6 @@ func appServerReasoningText(item map[string]any) string {
 		for _, entry := range summary {
 			if text, ok := entry.(string); ok && strings.TrimSpace(text) != "" {
 				parts = append(parts, text)
-			}
-		}
-	}
-	if len(parts) == 0 {
-		if content, ok := item["content"].([]any); ok {
-			for _, entry := range content {
-				if text, ok := entry.(string); ok && strings.TrimSpace(text) != "" {
-					parts = append(parts, text)
-				}
 			}
 		}
 	}

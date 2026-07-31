@@ -549,6 +549,11 @@ func main() {
 			engine.SetBannedWords(cfg.BannedWords)
 		}
 
+		// Wire blocked-reply regex patterns
+		if len(cfg.BlockReplyPatterns) > 0 {
+			engine.SetBlockReplyPatterns(cfg.BlockReplyPatterns)
+		}
+
 		// Wire disabled commands (project-level)
 		if len(proj.DisabledCommands) > 0 {
 			engine.SetDisabledCommands(proj.DisabledCommands)
@@ -1778,6 +1783,9 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 
 	// Reload banned words
 	engine.SetBannedWords(cfg.BannedWords)
+
+	// Reload blocked-reply regex patterns
+	engine.SetBlockReplyPatterns(cfg.BlockReplyPatterns)
 
 	// Reload disabled commands
 	engine.SetDisabledCommands(proj.DisabledCommands)

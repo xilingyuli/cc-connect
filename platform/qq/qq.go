@@ -31,6 +31,7 @@ type Platform struct {
 	token                 string // optional access_token
 	allowFrom             string // comma-separated user IDs or "*"
 	shareSessionInChannel bool
+	groupReplyAll         bool // true = reply to every group message; false = only when the bot is @mentioned
 	handler               core.MessageHandler
 	conn                  *websocket.Conn
 	mu                    sync.Mutex
@@ -40,7 +41,7 @@ type Platform struct {
 	selfID                int64
 	dedup                 core.MessageDedup
 	groupNameCache        sync.Map // groupID -> group name
-	httpURL            string   // OneBot HTTP API URL, e.g. "http://127.0.0.1:3000"
+	httpURL               string   // OneBot HTTP API URL, e.g. "http://127.0.0.1:3000"
 }
 
 func New(opts map[string]any) (core.Platform, error) {
@@ -51,6 +52,12 @@ func New(opts map[string]any) (core.Platform, error) {
 	token, _ := opts["token"].(string)
 	allowFrom, _ := opts["allow_from"].(string)
 	shareSessionInChannel, _ := opts["share_session_in_channel"].(bool)
+	groupReplyAll, _ := opts["group_reply_all"].(bool)
+	// require_mention = false is equivalent to group_reply_all = true:
+	// both mean "respond to all group messages without needing an @mention".
+	if v, ok := opts["require_mention"].(bool); ok && !v {
+		groupReplyAll = true
+	}
 
 	core.CheckAllowFrom("qq", allowFrom)
 
@@ -62,7 +69,8 @@ func New(opts map[string]any) (core.Platform, error) {
 		token:                 token,
 		allowFrom:             allowFrom,
 		shareSessionInChannel: shareSessionInChannel,
-		httpURL:            httpURL,
+		groupReplyAll:         groupReplyAll,
+		httpURL:               httpURL,
 	}, nil
 }
 
@@ -214,6 +222,14 @@ func (p *Platform) handleMessage(payload map[string]any) {
 		return
 	}
 
+	// Group chats only respond when the bot is @mentioned (unless
+	// group_reply_all / require_mention = false). Check before parsing so
+	// non-mentioned messages with images/files are not downloaded.
+	if msgType == "group" && !p.groupReplyAll && !p.isSelfMentioned(payload) {
+		slog.Debug("qq: group message ignored (bot not mentioned)", "group_id", groupID, "user", userID)
+		return
+	}
+
 	var sessionKey string
 	if msgType == "group" {
 		if p.shareSessionInChannel {
@@ -253,6 +269,50 @@ func (p *Platform) handleMessage(payload map[string]any) {
 
 	slog.Debug("qq: message received", "type", msgType, "user", userID, "text_len", len(text))
 	p.handler(p, msg)
+}
+
+// isSelfMentioned reports whether the message contains an @mention of the bot
+// itself. Handles both the OneBot segment array (type "at") and the raw CQ
+// string fallback. When selfID is unknown (get_login_info failed), returns
+// false so group messages are filtered out conservatively.
+func (p *Platform) isSelfMentioned(payload map[string]any) bool {
+	if p.selfID <= 0 {
+		return false
+	}
+	self := strconv.FormatInt(p.selfID, 10)
+	switch msg := payload["message"].(type) {
+	case []any:
+		for _, seg := range msg {
+			s, ok := seg.(map[string]any)
+			if !ok {
+				continue
+			}
+			if segType, _ := s["type"].(string); segType != "at" {
+				continue
+			}
+			data, _ := s["data"].(map[string]any)
+			if data == nil {
+				continue
+			}
+			switch qq := data["qq"].(type) {
+			case string:
+				if qq == self {
+					return true
+				}
+			case float64:
+				if strconv.FormatInt(int64(qq), 10) == self {
+					return true
+				}
+			case json.Number:
+				if qq.String() == self {
+					return true
+				}
+			}
+		}
+	case string:
+		return strings.Contains(msg, "[CQ:at,qq="+self)
+	}
+	return false
 }
 
 func (p *Platform) parseMessage(payload map[string]any, msgType string, groupID int64) (string, []core.ImageAttachment, []core.FileAttachment, *core.AudioAttachment) {

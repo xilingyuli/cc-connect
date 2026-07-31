@@ -630,6 +630,18 @@ type LiveModeSwitcher interface {
 	SetLiveMode(mode string) bool
 }
 
+// SessionModeStarter is an optional interface for agents that can start a
+// session with an explicit permission mode. The engine resolves per-session
+// mode_rules BEFORE starting the session and passes the mode here, so backends
+// that create their execution context during session start (e.g. the codex
+// app-server thread with its sandbox/approval pair) get the correct mode
+// immediately instead of only after the session exists. Agents that do not
+// implement this interface fall back to StartSession plus a post-start
+// SetLiveMode.
+type SessionModeStarter interface {
+	StartSessionWithMode(ctx context.Context, sessionID, mode string) (AgentSession, error)
+}
+
 // StartupWarner is an optional interface for agent sessions that need to surface
 // a one-time warning to the IM user at session start (e.g. when a requested
 // permission mode was silently downgraded due to OS constraints). The engine

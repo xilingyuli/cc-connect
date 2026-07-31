@@ -1100,10 +1100,10 @@ func TestProcessInteractiveEvents_NonTerminalResultContinuesTurn(t *testing.T) {
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	agentSession := newControllableSession("s1")
 	state := &interactiveState{
-		agentSession:                  agentSession,
-		platform:                      p,
-		replyCtx:                      "ctx-1",
-		currentTurnUserMessageTimeMs:  100,
+		agentSession:                   agentSession,
+		platform:                       p,
+		replyCtx:                       "ctx-1",
+		currentTurnUserMessageTimeMs:   100,
 		lastCompletedUserMessageTimeMs: 0,
 	}
 	e.interactiveStates[sessionKey] = state
@@ -4946,8 +4946,11 @@ func TestCmdDir_SwitchesDirectoryAndResetsSession(t *testing.T) {
 
 	e.cmdDir(p, msg, []string{"next"})
 
-	if agent.workDir != nextDir {
-		t.Fatalf("workDir = %q, want %q", agent.workDir, nextDir)
+	if got := e.sendWorkDirForSession(msg.SessionKey); got != nextDir {
+		t.Fatalf("session work dir = %q, want %q", got, nextDir)
+	}
+	if agent.workDir != tempDir {
+		t.Fatalf("shared agent workDir = %q, want unchanged %q (dir is per-session)", agent.workDir, tempDir)
 	}
 	if s.GetAgentSessionID() != "" {
 		t.Fatalf("AgentSessionID = %q, want cleared", s.GetAgentSessionID())
@@ -4972,6 +4975,9 @@ func TestCmdDir_RejectsMissingDirectory(t *testing.T) {
 	if agent.workDir != tempDir {
 		t.Fatalf("workDir = %q, want unchanged %q", agent.workDir, tempDir)
 	}
+	if got := e.sendWorkDirForSession("test:user1"); got != "" {
+		t.Fatalf("session work dir = %q, want empty after rejected switch", got)
+	}
 	if len(p.sent) != 1 || !strings.Contains(p.sent[0], missingDir) {
 		t.Fatalf("sent = %v, want invalid path message", p.sent)
 	}
@@ -4990,8 +4996,8 @@ func TestCmdDir_AliasCdStillWorks(t *testing.T) {
 
 	e.handleCommand(p, &Message{SessionKey: "test:user1", UserID: "admin1", ReplyCtx: "ctx"}, "/cd next")
 
-	if agent.workDir != nextDir {
-		t.Fatalf("workDir = %q, want %q", agent.workDir, nextDir)
+	if got := e.sendWorkDirForSession("test:user1"); got != nextDir {
+		t.Fatalf("session work dir = %q, want %q", got, nextDir)
 	}
 }
 
@@ -5028,8 +5034,8 @@ func TestCmdDir_PersistsAbsoluteOverride(t *testing.T) {
 	e.cmdDir(p, &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}, []string{"next"})
 
 	reloaded := NewProjectStateStore(statePath)
-	if got := reloaded.WorkDirOverride(); got != nextDir {
-		t.Fatalf("WorkDirOverride() = %q, want %q", got, nextDir)
+	if got := reloaded.SessionWorkDirOverride("test:user1"); got != nextDir {
+		t.Fatalf("SessionWorkDirOverride() = %q, want %q", got, nextDir)
 	}
 }
 
@@ -5110,13 +5116,14 @@ func TestCmdDir_ResetRestoresBaseWorkDirAndClearsState(t *testing.T) {
 	}
 	statePath := filepath.Join(t.TempDir(), "projects", "test.state.json")
 	store := NewProjectStateStore(statePath)
-	store.SetWorkDirOverride(overrideDir)
+	store.SetSessionWorkDirOverride("test:user1", overrideDir)
 	store.Save()
 
 	agent := &stubWorkDirAgent{workDir: overrideDir}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
 	e.SetBaseWorkDir(baseDir)
 	e.SetProjectStateStore(store)
+	e.bindSendWorkDir("test:user1", overrideDir)
 	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
 
 	s := e.sessions.GetOrCreateActive(msg.SessionKey)
@@ -5126,12 +5133,12 @@ func TestCmdDir_ResetRestoresBaseWorkDirAndClearsState(t *testing.T) {
 
 	e.cmdDir(p, msg, []string{"reset"})
 
-	if agent.workDir != baseDir {
-		t.Fatalf("workDir = %q, want %q", agent.workDir, baseDir)
+	if got := e.sendWorkDirForSession(msg.SessionKey); got != "" {
+		t.Fatalf("session work dir = %q, want empty after reset (falls back to project default)", got)
 	}
 	reloaded := NewProjectStateStore(statePath)
-	if got := reloaded.WorkDirOverride(); got != "" {
-		t.Fatalf("WorkDirOverride() = %q, want empty", got)
+	if got := reloaded.SessionWorkDirOverride(msg.SessionKey); got != "" {
+		t.Fatalf("SessionWorkDirOverride() = %q, want empty", got)
 	}
 	if s.GetAgentSessionID() != "" {
 		t.Fatalf("AgentSessionID = %q, want cleared", s.GetAgentSessionID())
@@ -5168,13 +5175,13 @@ func TestCmdDir_SwitchesByHistoryIndex(t *testing.T) {
 
 	// Build history: dir1 -> dir2 -> dir3
 	e.cmdDir(p, msg, []string{dir2})
-	if agent.workDir != dir2 {
-		t.Fatalf("after /dir dir2: workDir = %q, want %q", agent.workDir, dir2)
+	if got := e.sendWorkDirForSession(msg.SessionKey); got != dir2 {
+		t.Fatalf("after /dir dir2: session work dir = %q, want %q", got, dir2)
 	}
 
 	e.cmdDir(p, msg, []string{dir3})
-	if agent.workDir != dir3 {
-		t.Fatalf("after /dir dir3: workDir = %q, want %q", agent.workDir, dir3)
+	if got := e.sendWorkDirForSession(msg.SessionKey); got != dir3 {
+		t.Fatalf("after /dir dir3: session work dir = %q, want %q", got, dir3)
 	}
 
 	// Now history should be: [dir3, dir2, dir1] (dir1 might not be in history since it wasn't added initially)
@@ -5185,8 +5192,8 @@ func TestCmdDir_SwitchesByHistoryIndex(t *testing.T) {
 	e.cmdDir(p, msg, []string{"2"})
 
 	// Should have switched to dir2
-	if agent.workDir != dir2 {
-		t.Fatalf("after /dir 2: workDir = %q, want %q", agent.workDir, dir2)
+	if got := e.sendWorkDirForSession(msg.SessionKey); got != dir2 {
+		t.Fatalf("after /dir 2: session work dir = %q, want %q", got, dir2)
 	}
 
 	// Check the reply mentions dir2
@@ -5272,8 +5279,8 @@ func TestCmdDir_ExpandsTilde(t *testing.T) {
 			t.Fatalf("MkdirAll %q: %v", tc.wantDir, err)
 		}
 		e.cmdDir(p, msg, []string{tc.input})
-		if agent.workDir != tc.wantDir {
-			t.Errorf("input %q: workDir = %q, want %q", tc.input, agent.workDir, tc.wantDir)
+		if got := e.sendWorkDirForSession(msg.SessionKey); got != tc.wantDir {
+			t.Errorf("input %q: session work dir = %q, want %q", tc.input, got, tc.wantDir)
 		}
 	}
 }
@@ -6226,8 +6233,8 @@ func TestHandleCardNav_DirSelectSwitchesWorkDir(t *testing.T) {
 
 	sk := "test:user1"
 	_ = e.handleCardNav("act:/dir select 2", sk)
-	if agent.workDir != d2 {
-		t.Fatalf("workDir = %q, want %q", agent.workDir, d2)
+	if got := e.sendWorkDirForSession(sk); got != d2 {
+		t.Fatalf("session work dir = %q, want %q", got, d2)
 	}
 	card := e.handleCardNav("nav:/dir 1", sk)
 	if card == nil {
@@ -15016,8 +15023,8 @@ func TestIsAllowResponse_WithMultipleMentions(t *testing.T) {
 func TestIsAllowResponse_NotInsideOtherWord(t *testing.T) {
 	cases := []string{
 		"禁止允许这种",
-		"不允许这样",   // "不允许" has its own deny entry, but as part of "不允许这样" the user clearly is denying / negating, never allowing.
-		"我不太允许这件事", // long sentence, no token equals "允许"
+		"不允许这样",                            // "不允许" has its own deny entry, but as part of "不允许这样" the user clearly is denying / negating, never allowing.
+		"我不太允许这件事",                         // long sentence, no token equals "允许"
 		"please don't allowall the things", // FieldsFunc keeps "allowall" intact, but it is the approveAll single-token form, not allow.
 		"hello world",
 		"",
@@ -15045,7 +15052,7 @@ func TestIsDenyResponse_WithMention(t *testing.T) {
 	}
 
 	negatives := []string{
-		"拒绝症患者",       // embedded — must not match
+		"拒绝症患者",        // embedded — must not match
 		"我们都不应该 hello", // unrelated
 	}
 	for _, s := range negatives {
@@ -15375,5 +15382,140 @@ func TestAgentSystemPrompt_DocumentsAudioVideoFlags(t *testing.T) {
 	// doesn't silently downgrade --audio/--video to --file.
 	if !strings.Contains(prompt, "Do NOT downgrade") {
 		t.Error("AgentSystemPrompt missing the 'Do NOT downgrade' anti-regression line")
+	}
+}
+
+type stubWorkDirRuleAgent struct {
+	stubAgent
+	rules map[string]string
+}
+
+func (a *stubWorkDirRuleAgent) ResolveWorkDir(sessionKey string) string {
+	if a.rules == nil {
+		return ""
+	}
+	if dir, ok := a.rules[sessionKey]; ok {
+		return dir
+	}
+	return a.rules["*"]
+}
+
+type stubModeRuleStarterAgent struct {
+	stubAgent
+	rules           map[string]string
+	startedWithMode string
+}
+
+func (a *stubModeRuleStarterAgent) ResolveMode(msg *Message) string {
+	return a.rules[msg.SessionKey]
+}
+
+func (a *stubModeRuleStarterAgent) StartSessionWithMode(_ context.Context, _ string, mode string) (AgentSession, error) {
+	a.startedWithMode = mode
+	return &stubLiveModeSession{}, nil
+}
+
+type stubModeRuleAgent struct {
+	stubAgent
+	rules map[string]string
+}
+
+func (a *stubModeRuleAgent) ResolveMode(msg *Message) string {
+	return a.rules[msg.SessionKey]
+}
+
+func TestStartAgentSession_ResolvesModeBeforeStart(t *testing.T) {
+	agent := &stubModeRuleStarterAgent{rules: map[string]string{"qq:123456789": "yolo"}}
+	e := NewEngine("test", agent, nil, "", LangEnglish)
+
+	sess, mode, err := e.startAgentSession(agent, "qq:123456789", "")
+	if err != nil {
+		t.Fatalf("startAgentSession returned error: %v", err)
+	}
+	if mode != "yolo" {
+		t.Fatalf("resolved mode = %q, want yolo", mode)
+	}
+	if agent.startedWithMode != "yolo" {
+		t.Fatalf("StartSessionWithMode mode = %q, want yolo (resolved before session start)", agent.startedWithMode)
+	}
+	if _, ok := sess.(LiveModeSwitcher); !ok {
+		t.Fatalf("session type = %T, want LiveModeSwitcher-capable session", sess)
+	}
+
+	// No rule match -> plain StartSession, no mode override.
+	agent.startedWithMode = ""
+	sess, mode, err = e.startAgentSession(agent, "slack:C123", "")
+	if err != nil {
+		t.Fatalf("startAgentSession (no rule) returned error: %v", err)
+	}
+	if mode != "" {
+		t.Fatalf("resolved mode (no rule) = %q, want empty", mode)
+	}
+	if agent.startedWithMode != "" {
+		t.Fatalf("StartSessionWithMode called with %q, want plain StartSession", agent.startedWithMode)
+	}
+}
+
+func TestStartAgentSession_FallsBackWithoutStarter(t *testing.T) {
+	agent := &stubModeRuleAgent{rules: map[string]string{"qq:123456789": "full-auto"}}
+	e := NewEngine("test", agent, nil, "", LangEnglish)
+
+	sess, mode, err := e.startAgentSession(agent, "qq:123456789", "")
+	if err != nil {
+		t.Fatalf("startAgentSession returned error: %v", err)
+	}
+	if mode != "full-auto" {
+		t.Fatalf("resolved mode = %q, want full-auto", mode)
+	}
+	if sess == nil {
+		t.Fatal("session is nil, want plain StartSession fallback")
+	}
+}
+
+func TestSendWorkDirForSession_FallsBackToAgentRules(t *testing.T) {
+	agent := &stubWorkDirRuleAgent{rules: map[string]string{
+		"qq:123456789": "/workspace/private",
+		"*":            "/workspace/fallback",
+	}}
+	e := NewEngine("test", agent, nil, "", LangEnglish)
+	e.SetProjectStateStore(NewProjectStateStore(filepath.Join(t.TempDir(), "projects", "test.state.json")))
+
+	if got := e.sendWorkDirForSession("qq:123456789"); got != "/workspace/private" {
+		t.Fatalf("exact rule = %q, want /workspace/private", got)
+	}
+	if got := e.sendWorkDirForSession("qq:123456"); got != "/workspace/fallback" {
+		t.Fatalf("wildcard rule = %q, want /workspace/fallback", got)
+	}
+	if got := e.sendWorkDirForSession("slack:C123"); got != "/workspace/fallback" {
+		t.Fatalf("wildcard catches other platforms: got %q, want /workspace/fallback", got)
+	}
+
+	// Persisted per-session /dir override wins over config rules.
+	e.projectState.SetSessionWorkDirOverride("qq:123456789", "/workspace/session-dir")
+	if got := e.sendWorkDirForSession("qq:123456789"); got != "/workspace/session-dir" {
+		t.Fatalf("session override = %q, want /workspace/session-dir", got)
+	}
+
+	// Runtime `send --cwd` binding takes precedence over config rules.
+	e.bindSendWorkDir("qq:123456789", "/workspace/runtime")
+	if got := e.sendWorkDirForSession("qq:123456789"); got != "/workspace/runtime" {
+		t.Fatalf("runtime binding = %q, want /workspace/runtime", got)
+	}
+}
+
+func TestSendWorkDirForSession_NoRules(t *testing.T) {
+	e := NewEngine("test", &stubAgent{}, nil, "", LangEnglish)
+	if got := e.sendWorkDirForSession("qq:1"); got != "" {
+		t.Fatalf("no rules: got %q, want empty", got)
+	}
+}
+
+func TestSendWorkDirForSession_NoWildcardNoMatch(t *testing.T) {
+	agent := &stubWorkDirRuleAgent{rules: map[string]string{
+		"qq:123456789": "/workspace/private",
+	}}
+	e := NewEngine("test", agent, nil, "", LangEnglish)
+	if got := e.sendWorkDirForSession("qq:g:987654321"); got != "" {
+		t.Fatalf("unmatched session = %q, want empty (fall back to project default)", got)
 	}
 }

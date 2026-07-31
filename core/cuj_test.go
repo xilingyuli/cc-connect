@@ -1090,8 +1090,8 @@ func TestCUJ_A3_ImageReachesAgent(t *testing.T) {
 	msg := &Message{
 		SessionKey: "test:img", Platform: "test", MessageID: "img1",
 		UserID: "img", UserName: "img",
-		Content: "what is in this image",
-		Images:  []ImageAttachment{{MimeType: "image/png", Data: []byte("\x89PNG fake"), FileName: "chart.png"}},
+		Content:  "what is in this image",
+		Images:   []ImageAttachment{{MimeType: "image/png", Data: []byte("\x89PNG fake"), FileName: "chart.png"}},
 		ReplyCtx: "ctx",
 	}
 	e.ReceiveMessage(plat, msg)
@@ -1154,8 +1154,8 @@ func TestCUJ_A5_FileReachesAgent(t *testing.T) {
 	msg := &Message{
 		SessionKey: "test:file", Platform: "test", MessageID: "f1",
 		UserID: "file", UserName: "file",
-		Content: "read this file",
-		Files:   []FileAttachment{{MimeType: "text/plain", Data: []byte("hello world"), FileName: "note.txt"}},
+		Content:  "read this file",
+		Files:    []FileAttachment{{MimeType: "text/plain", Data: []byte("hello world"), FileName: "note.txt"}},
 		ReplyCtx: "ctx",
 	}
 	e.ReceiveMessage(plat, msg)
@@ -1470,6 +1470,49 @@ func TestCUJ_D4_BannedWordsBlockMessage(t *testing.T) {
 	env.agent.mu.Unlock()
 	if n != 0 {
 		t.Fatalf("banned-words message reached the agent: %d sessions started", n)
+	}
+}
+
+// CUJ-D4b · block_reply_patterns: messages matching a regex are dropped
+// silently (no agent call), non-matching messages still reach the agent.
+func TestCUJ_D4b_BlockReplyPatternsDropMessage(t *testing.T) {
+	env := newCUJEnv(t)
+	env.engine.SetBlockReplyPatterns([]string{`^#`, `^\*`})
+
+	env.userSends("d4b", "#更新面板")
+	env.userSends("d4b", "*签到")
+	time.Sleep(150 * time.Millisecond)
+
+	env.agent.mu.Lock()
+	n := len(env.agent.sessions)
+	env.agent.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("pattern-blocked messages reached the agent: %d sessions started", n)
+	}
+
+	// Non-matching message still reaches the agent.
+	env.userSends("d4b", "hello")
+	time.Sleep(150 * time.Millisecond)
+	env.agent.mu.Lock()
+	n = len(env.agent.sessions)
+	env.agent.mu.Unlock()
+	if n == 0 {
+		t.Fatal("non-blocked message did not reach the agent")
+	}
+}
+
+// CUJ-D4c · invalid block_reply_patterns regexes are ignored without crashing.
+func TestCUJ_D4c_BlockReplyPatternsInvalidRegexIgnored(t *testing.T) {
+	env := newCUJEnv(t)
+	env.engine.SetBlockReplyPatterns([]string{`[invalid`, `^#`})
+
+	env.userSends("d4c", "#cmd")
+	time.Sleep(150 * time.Millisecond)
+	env.agent.mu.Lock()
+	n := len(env.agent.sessions)
+	env.agent.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("invalid-regex list still blocked nothing but agent started: %d", n)
 	}
 }
 
@@ -2008,4 +2051,3 @@ func TestCUJ_H2_TwoPlatformsConcurrentNoBleed(t *testing.T) {
 		t.Fatal("platB received no replies")
 	}
 }
-

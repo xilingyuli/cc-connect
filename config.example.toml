@@ -627,6 +627,18 @@ level = "info" # debug, info, warn, error
 # banned_words = ["违禁词1", "违禁词2", "secret_project"]
 
 # =============================================================================
+# Blocked-reply regex patterns / 禁回复正则
+# =============================================================================
+#
+# Messages whose content matches any of these regexes will NOT be replied to:
+# dropped silently, not forwarded to the agent. Useful for command prefixes
+# handled elsewhere (e.g. Miao-Yunzai's # /* commands).
+# 消息内容命中以下任一正则时静默不回复（不转发给 Agent）。
+# 例如禁止回复 # 或 * 开头的命令：
+
+# block_reply_patterns = ["^#", "^\\*"]
+
+# =============================================================================
 # Command Aliases / 命令别名
 # =============================================================================
 #
@@ -1504,7 +1516,21 @@ app_secret = "your-feishu-app-secret"
 # [projects.agent.options.mode_rules]
 # "qq:<ADMIN_QQ>" = "full-auto"  # admin private chat -> full permissions / 管理员私聊全权限
 # "qq:g:<GROUP_ID>" = "auto-edit" # a specific group / 指定群
-# "qq:*" = "suggest"             # catch-all for other QQ private chats / 其余 QQ 私聊兜底
+# "*" = "suggest"                # catch-all / 全局兜底
+#
+# Optional: per-session work directory rules / 可选：按会话 Key 匹配的工作目录规则
+# Each conversation maps to its own workspace directory, applied when the
+# session is initialized. Match precedence is the same as mode_rules:
+# exact session key > prefix before last ':' > "*" wildcard. Sessions with no
+# matching rule use the project-level `work_dir` above.
+# 每个会话独立映射到自己的工作目录（会话初始化时生效）。匹配优先级与
+# mode_rules 相同：精确 Key > 最后一个 ':' 前的前缀 > "*" 通配。未命中任何
+# 规则的会话使用上面的项目级 `work_dir`。
+#
+# [projects.agent.options.work_dir_rules]
+# "qq:<ADMIN_QQ>" = "/path/to/private/workspace"   # 私聊工作区
+# "qq:g:<GROUP_ID>" = "/path/to/group/workspace"   # 群聊工作区
+# "qq:<GROUP_ID>" = "/path/to/group/workspace"     # 群内每人一会话时的前缀 Key
 #
 # Optional: specify a model / 可选：指定模型
 # model = "o3"
@@ -1580,6 +1606,11 @@ app_secret = "your-feishu-app-secret"
 # allow_from = "*"                 # allowed QQ user IDs, e.g. "12345,67890" or "*" for all
 #                                  # 允许的 QQ 号，如 "12345,67890"，"*" 表示所有
 # share_session_in_channel = false  # If true, all users in a group share one agent session / 群聊共享会话
+# require_mention = true            # If true (default), group chats only reply when the bot is @mentioned.
+#                                   # 设为 true（默认）时，群聊中只有 @机器人 的消息才会触发回复。
+# group_reply_all = false           # If true, respond to ALL group messages without requiring @mention
+#                                   # （require_mention = false 与此等价）
+#                                   # 设为 true 时，群聊无需 @机器人 也会响应所有消息
 
 # QQ Bot (Official / 官方 QQ 机器人) (uncomment to enable / 取消注释以启用)
 # Uses the official QQ Bot Platform API — no third-party adapter needed.

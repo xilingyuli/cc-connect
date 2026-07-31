@@ -66,6 +66,39 @@ func TestWorkspaceDirOverride(t *testing.T) {
 	}
 }
 
+func TestSessionWorkDirOverride(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "projects", "demo.state.json")
+	sessionA := "qq:123456789"
+	sessionB := "qq:g:987654321"
+
+	store := NewProjectStateStore(statePath)
+	store.SetSessionWorkDirOverride(sessionA, "/tmp/session-a")
+	store.SetSessionWorkDirOverride(sessionB, "/tmp/session-b")
+	store.Save()
+
+	reloaded := NewProjectStateStore(statePath)
+	if got := reloaded.SessionWorkDirOverride(sessionA); got != "/tmp/session-a" {
+		t.Fatalf("SessionWorkDirOverride(%q) = %q, want %q", sessionA, got, "/tmp/session-a")
+	}
+	if got := reloaded.SessionWorkDirOverride(sessionB); got != "/tmp/session-b" {
+		t.Fatalf("SessionWorkDirOverride(%q) = %q, want %q", sessionB, got, "/tmp/session-b")
+	}
+	if got := reloaded.SessionWorkDirOverride("qq:missing"); got != "" {
+		t.Fatalf("SessionWorkDirOverride(missing) = %q, want empty", got)
+	}
+
+	reloaded.ClearSessionWorkDirOverride(sessionA)
+	reloaded.Save()
+
+	cleared := NewProjectStateStore(statePath)
+	if got := cleared.SessionWorkDirOverride(sessionA); got != "" {
+		t.Fatalf("SessionWorkDirOverride(%q) after clear = %q, want empty", sessionA, got)
+	}
+	if got := cleared.SessionWorkDirOverride(sessionB); got != "/tmp/session-b" {
+		t.Fatalf("SessionWorkDirOverride(%q) after clearing other session = %q, want %q", sessionB, got, "/tmp/session-b")
+	}
+}
+
 func TestWorkspaceModelOverride(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "projects", "demo.state.json")
 	workspaceA := "/tmp/workspace-a"

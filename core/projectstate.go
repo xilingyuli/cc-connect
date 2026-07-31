@@ -10,6 +10,7 @@ import (
 
 type projectStateData struct {
 	WorkDirOverride         string            `json:"work_dir_override,omitempty"`
+	SessionWorkDirOverrides map[string]string `json:"session_work_dir_overrides,omitempty"`
 	WorkspaceDirOverrides   map[string]string `json:"workspace_dir_overrides,omitempty"`
 	WorkspaceModelOverrides map[string]string `json:"workspace_model_overrides,omitempty"`
 }
@@ -107,6 +108,42 @@ func (ps *ProjectStateStore) ClearWorkspaceModelOverride(workspace string) {
 
 func (ps *ProjectStateStore) ClearWorkDirOverride() {
 	ps.SetWorkDirOverride("")
+}
+
+// SessionWorkDirOverride returns the per-session work directory override for
+// a session key, or "" when the session has no override (falls back to the
+// project default or work_dir_rules).
+func (ps *ProjectStateStore) SessionWorkDirOverride(sessionKey string) string {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	if ps.state.SessionWorkDirOverrides == nil {
+		return ""
+	}
+	return ps.state.SessionWorkDirOverrides[sessionKey]
+}
+
+func (ps *ProjectStateStore) SetSessionWorkDirOverride(sessionKey, dir string) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	if dir == "" || sessionKey == "" {
+		return
+	}
+	if ps.state.SessionWorkDirOverrides == nil {
+		ps.state.SessionWorkDirOverrides = make(map[string]string)
+	}
+	ps.state.SessionWorkDirOverrides[sessionKey] = dir
+}
+
+func (ps *ProjectStateStore) ClearSessionWorkDirOverride(sessionKey string) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	if ps.state.SessionWorkDirOverrides == nil {
+		return
+	}
+	delete(ps.state.SessionWorkDirOverrides, sessionKey)
+	if len(ps.state.SessionWorkDirOverrides) == 0 {
+		ps.state.SessionWorkDirOverrides = nil
+	}
 }
 
 func (ps *ProjectStateStore) Save() {

@@ -36,9 +36,10 @@ type Agent struct {
 	workDir         string
 	model           string
 	reasoningEffort string
-	mode            string // "suggest" | "auto-edit" | "full-auto" | "yolo"
+	mode            string            // "suggest" | "auto-edit" | "full-auto" | "yolo"
 	modeRules       map[string]string // session-key -> permission mode (from mode_rules)
-	backend         string // "exec" | "app_server"
+	workDirRules    map[string]string // session-key -> work directory (from work_dir_rules)
+	backend         string            // "exec" | "app_server"
 	appServerURL    string
 	codexHome       string
 	systemPrompt    string
@@ -64,6 +65,11 @@ func New(opts map[string]any) (core.Agent, error) {
 	// [projects.agent.options.mode_rules]
 	// "qq:<userID>" = "full-auto"
 	modeRules := parseModeRules(opts["mode_rules"])
+	// work_dir_rules: per-session-key work directory overrides, e.g.
+	// [projects.agent.options.work_dir_rules]
+	// "qq:<userID>" = "/path/to/private/workspace"
+	// "qq:g:<groupID>" = "/path/to/group/workspace"
+	workDirRules := parseWorkDirRules(opts["work_dir_rules"])
 	backend, _ := opts["backend"].(string)
 	appServerURL, _ := opts["app_server_url"].(string)
 	codexHome, _ := opts["codex_home"].(string)
@@ -102,6 +108,7 @@ func New(opts map[string]any) (core.Agent, error) {
 		reasoningEffort: normalizeReasoningEffort(reasoningEffort),
 		mode:            mode,
 		modeRules:       modeRules,
+		workDirRules:    workDirRules,
 		backend:         backend,
 		appServerURL:    appServerURL,
 		codexHome:       strings.TrimSpace(codexHome),
@@ -151,6 +158,34 @@ func parseModeRules(raw any) map[string]string {
 			if k = strings.TrimSpace(k); k != "" {
 				if s, ok := m.(string); ok {
 					rules[k] = normalizeMode(s)
+				}
+			}
+		}
+	}
+	return rules
+}
+
+// parseWorkDirRules parses the work_dir_rules agent option: a map of
+// session-key patterns to workspace directories. Both TOML string maps and
+// generic maps are accepted. Empty directories are skipped.
+func parseWorkDirRules(raw any) map[string]string {
+	rules := map[string]string{}
+	switch v := raw.(type) {
+	case map[string]string:
+		for k, dir := range v {
+			if k = strings.TrimSpace(k); k != "" {
+				if dir = strings.TrimSpace(dir); dir != "" {
+					rules[k] = dir
+				}
+			}
+		}
+	case map[string]any:
+		for k, v := range v {
+			if k = strings.TrimSpace(k); k != "" {
+				if s, ok := v.(string); ok {
+					if s = strings.TrimSpace(s); s != "" {
+						rules[k] = s
+					}
 				}
 			}
 		}
@@ -341,7 +376,6 @@ func readCodexCachedModels() []core.ModelOption {
 	return parseCodexModelsJSON(b)
 }
 
-
 // parseCodexModelsJSON parses a Codex models JSON file (model_catalog.json
 // or models_cache.json) into a deduplicated, filtered slice of ModelOption.
 // It is shared by readCodexCachedModels and readCodexModelCatalog.
@@ -386,7 +420,6 @@ func parseCodexModelsJSON(data []byte) []core.ModelOption {
 	}
 	return models
 }
-
 
 // readCodexModelCatalog reads $CODEX_HOME/config.toml to find the
 // model_catalog_json setting, then reads and parses that JSON file.
@@ -450,8 +483,23 @@ func (a *Agent) SetSessionEnv(env []string) {
 }
 
 func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentSession, error) {
+	return a.startSession(ctx, sessionID, "")
+}
+
+// StartSessionWithMode starts a session with an explicit permission mode
+// override (used by the engine for mode_rules) so the app-server thread is
+// created with the correct sandbox/approval pair immediately, instead of
+// applying the mode only after the thread already exists.
+func (a *Agent) StartSessionWithMode(ctx context.Context, sessionID, mode string) (core.AgentSession, error) {
+	return a.startSession(ctx, sessionID, mode)
+}
+
+func (a *Agent) startSession(ctx context.Context, sessionID, modeOverride string) (core.AgentSession, error) {
 	a.mu.Lock()
 	mode := a.mode
+	if modeOverride != "" {
+		mode = normalizeMode(modeOverride)
+	}
 	model := a.model
 	reasoningEffort := a.reasoningEffort
 	backend := a.backend
@@ -565,6 +613,33 @@ func (a *Agent) ResolveMode(msg *core.Message) string {
 		}
 	}
 	return a.modeRules["*"]
+}
+
+// ResolveWorkDir matches a session key against the configured work_dir_rules
+// and returns the work directory to use for that conversation, or "" when no
+// rule matches (caller keeps the project default work_dir). Match precedence
+// is the same as mode_rules:
+//  1. exact session key match (e.g. "qq:123456789")
+//  2. prefix match — everything before the last ':' (e.g. "qq:987654321" matches
+//     session key "qq:987654321:123456789")
+//  3. "*" wildcard catch-all, when configured
+func (a *Agent) ResolveWorkDir(sessionKey string) string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if len(a.workDirRules) == 0 {
+		return ""
+	}
+	if sessionKey != "" {
+		if dir, ok := a.workDirRules[sessionKey]; ok {
+			return dir
+		}
+		if i := strings.LastIndex(sessionKey, ":"); i > 0 {
+			if dir, ok := a.workDirRules[sessionKey[:i]]; ok {
+				return dir
+			}
+		}
+	}
+	return a.workDirRules["*"]
 }
 
 func (a *Agent) WorkspaceAgentOptions() map[string]any {

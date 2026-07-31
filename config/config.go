@@ -92,9 +92,10 @@ type Config struct {
 	Providers          []ProviderConfig        `toml:"providers"`                      // global shared providers
 	ProviderPresetsURL string                  `toml:"provider_presets_url,omitempty"` // remote JSON URL for provider presets
 	Projects           []ProjectConfig         `toml:"projects"`
-	Commands           []CommandConfig         `toml:"commands"`     // global custom slash commands
-	Aliases            []AliasConfig           `toml:"aliases"`      // global command aliases
-	BannedWords        []string                `toml:"banned_words"` // messages containing any of these words are blocked
+	Commands           []CommandConfig         `toml:"commands"`             // global custom slash commands
+	Aliases            []AliasConfig           `toml:"aliases"`              // global command aliases
+	BannedWords        []string                `toml:"banned_words"`         // messages containing any of these words are blocked
+	BlockReplyPatterns []string                `toml:"block_reply_patterns"` // messages matching any of these regexes get no reply
 	Log                LogConfig               `toml:"log"`
 	Language           string                  `toml:"language"` // "en" or "zh", default is "en"
 	Speech             SpeechConfig            `toml:"speech"`
