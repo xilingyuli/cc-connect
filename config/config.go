@@ -96,6 +96,7 @@ type Config struct {
 	Aliases            []AliasConfig           `toml:"aliases"`              // global command aliases
 	BannedWords        []string                `toml:"banned_words"`         // messages containing any of these words are blocked
 	BlockReplyPatterns []string                `toml:"block_reply_patterns"` // messages matching any of these regexes get no reply
+	Observer           string                  `toml:"observer,omitempty"`   // path to the observer plugin config; empty = disabled
 	Log                LogConfig               `toml:"log"`
 	Language           string                  `toml:"language"` // "en" or "zh", default is "en"
 	Speech             SpeechConfig            `toml:"speech"`

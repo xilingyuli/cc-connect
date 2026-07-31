@@ -639,6 +639,19 @@ level = "info" # debug, info, warn, error
 # block_reply_patterns = ["^#", "^\\*"]
 
 # =============================================================================
+# Passive group observer (plugin) master switch / 群聊视奸总开关
+# =============================================================================
+#
+# Value is the path to the observer plugin's config file (absolute or relative;
+# relative paths resolve against this config file's directory). Empty = disabled.
+# The plugin code lives in its own repository and is wired via go.mod replace.
+# 值为观察者插件配置文件路径（绝对或相对路径，相对路径相对本配置文件所在目录解析）；
+# 留空 = 关闭。插件代码在独立仓库，通过 go.mod replace 引入。
+# 由插件按自己的激活规则决定是否以“活人感”主动插话。
+
+# observer = "/path/to/cc-connect-observer/observer.toml"
+
+# =============================================================================
 # Command Aliases / 命令别名
 # =============================================================================
 #

@@ -200,6 +200,15 @@ type Message struct {
 	// drop late redeliveries that reuse a new message_id but an older create_time
 	// than a message already processed. Zero means unset (no ordering hint).
 	UserMessageTimeMs int64
+	// Mentioned is true for group messages where the bot was @mentioned
+	// (set by platforms before forwarding; used by observers and filters).
+	Mentioned bool
+	// ReasoningEffortOverride forces a reasoning effort for this turn (e.g.
+	// "low"), overriding the session default. Empty = keep current effort.
+	ReasoningEffortOverride string
+	// SuppressProgress, when true, suppresses thinking/tool progress messages
+	// for this turn while still delivering the final reply.
+	SuppressProgress bool
 }
 
 // EventType distinguishes different kinds of agent output.
@@ -231,20 +240,20 @@ type UserQuestionOption struct {
 
 // Event represents a single piece of agent output streamed back to the engine.
 type Event struct {
-	Type         EventType
-	Content      string
-	ToolName     string         // populated for EventToolUse, EventPermissionRequest
-	ToolInput    string         // human-readable summary of tool input
-	ToolInputRaw map[string]any // raw tool input (for EventPermissionRequest, used in allow response)
-	ToolResult   string         // populated for EventToolResult
-	ToolStatus   string         // optional status for EventToolResult (e.g. completed/failed)
-	ToolExitCode *int           // optional exit code for EventToolResult
-	ToolSuccess  *bool          // optional success flag for EventToolResult
-	SessionID    string         // agent-managed session ID for conversation continuity
-	RequestID    string         // unique request ID for EventPermissionRequest
-	Questions    []UserQuestion // populated when ToolName == "AskUserQuestion"
-	Done         bool
-	Error        error
+	Type                     EventType
+	Content                  string
+	ToolName                 string         // populated for EventToolUse, EventPermissionRequest
+	ToolInput                string         // human-readable summary of tool input
+	ToolInputRaw             map[string]any // raw tool input (for EventPermissionRequest, used in allow response)
+	ToolResult               string         // populated for EventToolResult
+	ToolStatus               string         // optional status for EventToolResult (e.g. completed/failed)
+	ToolExitCode             *int           // optional exit code for EventToolResult
+	ToolSuccess              *bool          // optional success flag for EventToolResult
+	SessionID                string         // agent-managed session ID for conversation continuity
+	RequestID                string         // unique request ID for EventPermissionRequest
+	Questions                []UserQuestion // populated when ToolName == "AskUserQuestion"
+	Done                     bool
+	Error                    error
 	InputTokens              int // token usage from agent result events
 	OutputTokens             int
 	CacheCreationInputTokens int            // cache-write tokens (new content written to cache)

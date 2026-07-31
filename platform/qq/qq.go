@@ -32,6 +32,7 @@ type Platform struct {
 	allowFrom             string // comma-separated user IDs or "*"
 	shareSessionInChannel bool
 	groupReplyAll         bool // true = reply to every group message; false = only when the bot is @mentioned
+	groupMessagePolicy    func(msg *core.Message) (forward bool, content string, effort string, suppressProgress bool)
 	handler               core.MessageHandler
 	conn                  *websocket.Conn
 	mu                    sync.Mutex
@@ -72,6 +73,24 @@ func New(opts map[string]any) (core.Platform, error) {
 		groupReplyAll:         groupReplyAll,
 		httpURL:               httpURL,
 	}, nil
+}
+
+// SetGroupMessagePolicy registers the group-message forwarding policy. When
+// set, it decides for every group message whether it is forwarded to the agent
+// and with what parameters (prompt content, reasoning effort, progress
+// suppression). When unset, the platform falls back to the configured
+// require_mention / group_reply_all filtering.
+func (p *Platform) SetGroupMessagePolicy(fn func(msg *core.Message) (forward bool, content string, effort string, suppressProgress bool)) {
+	p.groupMessagePolicy = fn
+}
+
+// Inject delivers a message into the engine as if it came from the platform.
+// Used by the observer plugin to forward deferred (pending) shadow decisions
+// after the in-flight turn completes.
+func (p *Platform) Inject(msg *core.Message) {
+	if p.handler != nil {
+		p.handler(p, msg)
+	}
 }
 
 func (p *Platform) Name() string { return "qq" }
@@ -222,14 +241,6 @@ func (p *Platform) handleMessage(payload map[string]any) {
 		return
 	}
 
-	// Group chats only respond when the bot is @mentioned (unless
-	// group_reply_all / require_mention = false). Check before parsing so
-	// non-mentioned messages with images/files are not downloaded.
-	if msgType == "group" && !p.groupReplyAll && !p.isSelfMentioned(payload) {
-		slog.Debug("qq: group message ignored (bot not mentioned)", "group_id", groupID, "user", userID)
-		return
-	}
-
 	var sessionKey string
 	if msgType == "group" {
 		if p.shareSessionInChannel {
@@ -252,6 +263,7 @@ func (p *Platform) handleMessage(payload map[string]any) {
 	if msgType == "group" {
 		chatName = p.resolveGroupName(groupID)
 	}
+	mentioned := msgType == "group" && p.isSelfMentioned(payload)
 
 	msg := &core.Message{
 		SessionKey: sessionKey,
@@ -265,6 +277,24 @@ func (p *Platform) handleMessage(payload map[string]any) {
 		Files:      files,
 		Audio:      audio,
 		ReplyCtx:   rctx,
+		Mentioned:  mentioned,
+	}
+
+	if msgType == "group" && p.groupMessagePolicy != nil {
+		forward, content, effort, suppress := p.groupMessagePolicy(msg)
+		if !forward {
+			return
+		}
+		if content != "" {
+			msg.Content = content
+		}
+		msg.ReasoningEffortOverride = effort
+		msg.SuppressProgress = suppress
+	} else if msgType == "group" && !p.groupReplyAll && !mentioned {
+		// Fallback (no policy hook): only respond when the bot is @mentioned
+		// (unless group_reply_all / require_mention = false).
+		slog.Debug("qq: group message ignored (bot not mentioned)", "group_id", groupID, "user", userID)
+		return
 	}
 
 	slog.Debug("qq: message received", "type", msgType, "user", userID, "text_len", len(text))

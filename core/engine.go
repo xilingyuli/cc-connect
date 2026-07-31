@@ -513,6 +513,7 @@ type interactiveState struct {
 	pendingMessages          []queuedMessage // messages queued while session was busy
 	approveAll               bool            // when true, auto-approve all permission requests for this session
 	sessionMode              string          // permission mode fixed at session start (mode_rules); /mode updates it
+	suppressProgress         bool            // true = do not send thinking/tool progress for this turn
 	fromVoice                bool            // true if current turn originated from voice transcription
 	sideText                 string
 	deleteMode               *deleteModeState
@@ -1345,6 +1346,21 @@ func (e *Engine) SetDataDir(dir string) {
 	e.dataDir = dir
 }
 
+// IsSessionBusy reports whether the session currently has an in-flight turn.
+// Used by the observer plugin to defer shadow decisions until the running turn
+// completes (completion can change the last-effective-reply time, which the
+// shadow decision depends on).
+func (e *Engine) IsSessionBusy(sessionKey string) bool {
+	if e.sessions == nil {
+		return false
+	}
+	s := e.sessions.GetActive(sessionKey)
+	if s == nil {
+		return false
+	}
+	return s.Busy()
+}
+
 // RemoveCommand removes a custom command by name. Returns false if not found.
 func (e *Engine) RemoveCommand(name string) bool {
 	return e.commands.Remove(name)
@@ -1472,6 +1488,8 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		silent := false
 		if e.cronScheduler != nil {
 			silent = e.cronScheduler.IsSilent(job)
+		} else if job.Silent != nil {
+			silent = *job.Silent
 		}
 		if !silent {
 			desc := job.Description
@@ -3658,6 +3676,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 		agentOverride = agent
 	}
 	state := e.getOrCreateInteractiveStateWith(interactiveKey, p, msg.ReplyCtx, session, sessions, agentOverride, ccSessionKey)
+	state.suppressProgress = msg.SuppressProgress
 
 	// Set workspaceDir on the state for idle reaper identification
 	if workspaceDir != "" {
@@ -3715,6 +3734,14 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 					switcher.SetLiveMode(defaultMode)
 				}()
 			}
+		}
+	}
+
+	// Apply per-message reasoning effort override (e.g. observer turns forced
+	// to "low" while @ turns stay "high"). Applies to this session.
+	if msg.ReasoningEffortOverride != "" {
+		if switcher, ok := state.agentSession.(ReasoningEffortSwitcher); ok {
+			switcher.SetReasoningEffort(msg.ReasoningEffortOverride)
 		}
 	}
 
@@ -4860,7 +4887,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 			if hasRichCard {
 				// When thinking messages are suppressed, skip card creation.
-				if !e.display.ThinkingMessages {
+				if !e.display.ThinkingMessages || state.suppressProgress {
 					break
 				}
 				if thinking := strings.TrimSpace(truncateIf(event.Content, e.display.ThinkingMaxLen)); thinking != "" {
@@ -4913,7 +4940,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 				silentHold = false
 			}
-			if e.display.ThinkingMessages && event.Content != "" {
+			if e.display.ThinkingMessages && !state.suppressProgress && event.Content != "" {
 				// --- StreamingCard path ---
 				if streamCard != nil && !streamCard.Failed() {
 					cardThinkingText = truncateIf(event.Content, e.display.ThinkingMaxLen)

@@ -20,6 +20,7 @@ import (
 	"github.com/chenhg5/cc-connect/config"
 	"github.com/chenhg5/cc-connect/core"
 	"github.com/chenhg5/cc-connect/daemon"
+	"github.com/xilingyuli/cc-connect-observer"
 	// Agent and platform imports are in separate plugin_*.go files
 	// controlled by build tags. See Makefile for selective compilation.
 )
@@ -432,6 +433,27 @@ func main() {
 		}
 
 		engine := core.NewEngine(proj.Name, agent, platforms, sessionFile, lang)
+		// Wire the passive group observer plugin. cc-connect only owns the
+		// master switch; the plugin keeps its own config in
+		// <data_dir>/observer.toml and its own logic in observer/.
+		var obs *observer.Observer
+		if cfg.Observer != "" {
+			obsPath := cfg.Observer
+			if strings.HasPrefix(obsPath, "~/") {
+				home, _ := os.UserHomeDir()
+				obsPath = filepath.Join(home, obsPath[2:])
+			} else if !filepath.IsAbs(obsPath) {
+				// Relative paths resolve against the cc-connect config file dir.
+				obsPath = filepath.Join(filepath.Dir(configPath), obsPath)
+			}
+			obsCfg, cfgErr := observer.LoadConfig(obsPath)
+			if cfgErr != nil {
+				slog.Warn("observer: config load failed, using defaults", "path", obsPath, "error", cfgErr)
+			}
+			obs = observer.New(obsCfg)
+			wireGroupObserver(engine, platforms, obs, cfg.BlockReplyPatterns)
+			slog.Info("observer: passive group observer enabled", "project", proj.Name, "config", obsPath)
+		}
 		// Wire display settings including show_context_indicator and reply_footer
 		// Global [display] config can be overridden by project-level settings
 		_, _, _, _, _, showCtx, showFooter := config.EffectiveDisplay(cfg, &proj)
@@ -587,19 +609,27 @@ func main() {
 		engine.SetShell(shell, shellFlag, shellProfile)
 
 		// Wire hooks
-		if len(cfg.Hooks) > 0 {
-			coreHooks := make([]core.HookConfig, len(cfg.Hooks))
-			for i, h := range cfg.Hooks {
-				coreHooks[i] = core.HookConfig{
-					Event:   h.Event,
-					Type:    h.Type,
-					Command: h.Command,
-					URL:     h.URL,
-					Timeout: h.Timeout,
-					Async:   h.Async,
-				}
+		coreHooks := make([]core.HookConfig, len(cfg.Hooks))
+		for i, h := range cfg.Hooks {
+			coreHooks[i] = core.HookConfig{
+				Event:   h.Event,
+				Type:    h.Type,
+				Command: h.Command,
+				URL:     h.URL,
+				Timeout: h.Timeout,
+				Async:   h.Async,
 			}
-			engine.SetHooks(core.NewHookManager(proj.Name, coreHooks, shell, shellFlag, shellProfile))
+		}
+		hookMgr := core.NewHookManager(proj.Name, coreHooks, shell, shellFlag, shellProfile)
+		if obs != nil {
+			hookMgr.SetListener(func(ev core.HookEvent) {
+				if ev.Event == core.HookEventMessageSent && isQQGroupSession(ev.SessionKey) {
+					obs.OnGroupReply(ev.SessionKey)
+				}
+			})
+		}
+		if len(cfg.Hooks) > 0 || obs != nil {
+			engine.SetHooks(hookMgr)
 		}
 
 		// Wire local reference normalization / rendering
@@ -2016,4 +2046,64 @@ func derefInt(v *int) int {
 		return 0
 	}
 	return *v
+}
+
+func intPtr(i int) *int { return &i }
+
+// isQQGroupSession reports whether the session key belongs to a QQ group chat
+// ("qq:g:<group>" shared or "qq:<group>:<user>" per-person).
+func isQQGroupSession(key string) bool {
+	parts := strings.SplitN(key, ":", 3)
+	if len(parts) < 2 || parts[0] != "qq" {
+		return false
+	}
+	if parts[1] == "g" {
+		return true
+	}
+	return len(parts) == 3
+}
+
+// wireGroupObserver connects the shadow-persona observer to the project's
+// engine and platforms: the group-message forwarding policy, the deferred
+// (pending) decision forwarder, the in-flight busy check, and the ignore
+// patterns inherited from cc-connect's block_reply_patterns.
+func wireGroupObserver(engine *core.Engine, platforms []core.Platform, obs *observer.Observer, blockReplyPatterns []string) {
+	obs.SetIgnorePatterns(blockReplyPatterns)
+	obs.SetSessionBusy(engine.IsSessionBusy)
+	for _, p := range platforms {
+		if hook, ok := p.(interface {
+			SetGroupMessagePolicy(func(msg *core.Message) (bool, string, string, bool))
+		}); ok {
+			hook.SetGroupMessagePolicy(func(msg *core.Message) (bool, string, string, bool) {
+				d := obs.Decide(observer.IncomingMessage{
+					SessionKey: msg.SessionKey,
+					UserName:   msg.UserName,
+					ChatName:   msg.ChatName,
+					Content:    msg.Content,
+					Mentioned:  msg.Mentioned,
+				})
+				return d.Forward, d.Content, d.Effort, d.SuppressProgress
+			})
+		}
+		if inj, ok := p.(interface {
+			Inject(*core.Message)
+			ReconstructReplyCtx(string) (any, error)
+		}); ok {
+			obs.SetForwarder(func(sessionKey string, d observer.Decision) error {
+				rc, err := inj.ReconstructReplyCtx(sessionKey)
+				if err != nil {
+					return err
+				}
+				inj.Inject(&core.Message{
+					SessionKey:              sessionKey,
+					Platform:                "qq",
+					Content:                 d.Content,
+					ReplyCtx:                rc,
+					ReasoningEffortOverride: d.Effort,
+					SuppressProgress:        d.SuppressProgress,
+				})
+				return nil
+			})
+		}
+	}
 }

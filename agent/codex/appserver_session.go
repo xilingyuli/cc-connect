@@ -942,6 +942,20 @@ func (s *appServerSession) GetReasoningEffort() string {
 	return strings.TrimSpace(s.effort)
 }
 
+// SetReasoningEffort overrides the reasoning effort for this session (per-turn
+// overrides from messages, e.g. observer turns forced to "low").
+func (s *appServerSession) SetReasoningEffort(effort string) {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	s.effort = normalizeReasoningEffort(effort)
+	slog.Info("codex: session reasoning effort changed", "reasoning_effort", s.effort)
+}
+
+// AvailableReasoningEfforts lists the supported effort levels.
+func (s *appServerSession) AvailableReasoningEfforts() []string {
+	return []string{"low", "medium", "high", "xhigh"}
+}
+
 func (s *appServerSession) GetUsage(ctx context.Context) (*core.UsageReport, error) {
 	if err := s.refreshUsage(ctx); err != nil {
 		if cached := s.cachedUsage(); cached != nil {

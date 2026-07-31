@@ -21,23 +21,23 @@ import (
 
 // CronJob represents a persisted scheduled task.
 type CronJob struct {
-	ID          string    `json:"id"`
-	Project     string    `json:"project"`
-	SessionKey  string    `json:"session_key"`
-	CronExpr    string    `json:"cron_expr"`
-	Prompt      string    `json:"prompt"`
-	Exec        string    `json:"exec,omitempty"`     // shell command; mutually exclusive with Prompt
-	WorkDir     string    `json:"work_dir,omitempty"` // working directory for exec; empty = agent work_dir
-	Description string    `json:"description"`
-	Enabled     bool      `json:"enabled"`
-	Silent      *bool     `json:"silent,omitempty"`       // suppress start notification; nil = use global default
-	Mute        bool      `json:"mute,omitempty"`         // suppress ALL messages (start + result); job runs silently
-	SessionMode string    `json:"session_mode,omitempty"` // "" or "reuse" = share active session; "new_per_run" = fresh session each run
-	Mode        string    `json:"mode,omitempty"`         // permission mode override for this job; "" = use project default
-	TimeoutMins *int      `json:"timeout_mins,omitempty"` // nil = default 30m wait; 0 = no limit; >0 = minutes
-	CreatedAt   time.Time `json:"created_at"`
-	LastRun     time.Time `json:"last_run,omitempty"`
-	LastError   string    `json:"last_error,omitempty"`
+	ID               string    `json:"id"`
+	Project          string    `json:"project"`
+	SessionKey       string    `json:"session_key"`
+	CronExpr         string    `json:"cron_expr"`
+	Prompt           string    `json:"prompt"`
+	Exec             string    `json:"exec,omitempty"`     // shell command; mutually exclusive with Prompt
+	WorkDir          string    `json:"work_dir,omitempty"` // working directory for exec; empty = agent work_dir
+	Description      string    `json:"description"`
+	Enabled          bool      `json:"enabled"`
+	Silent           *bool     `json:"silent,omitempty"`            // suppress start notification; nil = use global default
+	Mute             bool      `json:"mute,omitempty"`              // suppress ALL messages (start + result); job runs silently
+	SessionMode      string    `json:"session_mode,omitempty"`      // "" or "reuse" = share active session; "new_per_run" = fresh session each run
+	Mode             string    `json:"mode,omitempty"`              // permission mode override for this job; "" = use project default
+	TimeoutMins      *int      `json:"timeout_mins,omitempty"`      // nil = default 30m wait; 0 = no limit; >0 = minutes
+	CreatedAt        time.Time `json:"created_at"`
+	LastRun          time.Time `json:"last_run,omitempty"`
+	LastError        string    `json:"last_error,omitempty"`
 }
 
 // IsShellJob returns true if the job runs a shell command directly.
@@ -731,7 +731,6 @@ type mutePlatform struct {
 
 func (m *mutePlatform) Reply(_ context.Context, _ any, _ string) error { return nil }
 func (m *mutePlatform) Send(_ context.Context, _ any, _ string) error  { return nil }
-
 
 func GenerateCronID() string {
 	b := make([]byte, 4)

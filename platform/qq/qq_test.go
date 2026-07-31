@@ -285,3 +285,62 @@ func TestHandleMessage_GroupMentionFilter(t *testing.T) {
 		t.Errorf("private message should bypass mention filter, got %v", handled)
 	}
 }
+
+func TestHandleMessage_GroupMessagePolicy(t *testing.T) {
+	var forwarded []*core.Message
+	handler := func(p core.Platform, msg *core.Message) {
+		forwarded = append(forwarded, msg)
+	}
+	p := &Platform{selfID: 123456, handler: handler}
+	p.groupNameCache.Store("888", "test group")
+	p.SetGroupMessagePolicy(func(msg *core.Message) (bool, string, string, bool) {
+		if msg.Mentioned {
+			return true, msg.Content, "high", false
+		}
+		if strings.Contains(msg.Content, "什么") {
+			return true, "SHADOW-PROMPT:" + msg.Content, "low", true
+		}
+		return false, "", "", false
+	})
+
+	groupPayload := func(withAt bool, msgID int64, text string) map[string]any {
+		segs := []any{}
+		if withAt {
+			segs = append(segs, map[string]any{"type": "at", "data": map[string]any{"qq": "123456"}})
+		}
+		segs = append(segs, map[string]any{"type": "text", "data": map[string]any{"text": text}})
+		return map[string]any{
+			"post_type":    "message",
+			"message_type": "group",
+			"user_id":      float64(111),
+			"group_id":     float64(888),
+			"message_id":   float64(msgID),
+			"sender":       map[string]any{"card": "", "nickname": "tester"},
+			"message":      segs,
+		}
+	}
+
+	// Policy drops a non-keyword, non-@ message.
+	p.handleMessage(groupPayload(false, 1, "今天天气不错"))
+	if len(forwarded) != 0 {
+		t.Fatalf("policy should drop the message, got %d forwarded", len(forwarded))
+	}
+
+	// Keyword message is forwarded as a shadow turn with low effort + suppression.
+	p.handleMessage(groupPayload(false, 2, "你们觉得什么好玩"))
+	if len(forwarded) != 1 || forwarded[0].Content != "SHADOW-PROMPT:你们觉得什么好玩" {
+		t.Fatalf("shadow forward wrong: %+v", forwarded)
+	}
+	if forwarded[0].ReasoningEffortOverride != "low" || !forwarded[0].SuppressProgress {
+		t.Fatalf("shadow params wrong: effort=%q suppress=%v", forwarded[0].ReasoningEffortOverride, forwarded[0].SuppressProgress)
+	}
+
+	// @ message is forwarded as-is with high effort, no suppression.
+	p.handleMessage(groupPayload(true, 3, "推荐一下游戏"))
+	if len(forwarded) != 2 || forwarded[1].Content != "推荐一下游戏" {
+		t.Fatalf("@ forward wrong: %+v", forwarded)
+	}
+	if forwarded[1].ReasoningEffortOverride != "high" || forwarded[1].SuppressProgress {
+		t.Fatalf("@ params wrong: effort=%q suppress=%v", forwarded[1].ReasoningEffortOverride, forwarded[1].SuppressProgress)
+	}
+}
