@@ -37,6 +37,7 @@ type Agent struct {
 	model           string
 	reasoningEffort string
 	mode            string // "suggest" | "auto-edit" | "full-auto" | "yolo"
+	modeRules       map[string]string // session-key -> permission mode (from mode_rules)
 	backend         string // "exec" | "app_server"
 	appServerURL    string
 	codexHome       string
@@ -59,6 +60,10 @@ func New(opts map[string]any) (core.Agent, error) {
 	model, _ := opts["model"].(string)
 	reasoningEffort, _ := opts["reasoning_effort"].(string)
 	mode, _ := opts["mode"].(string)
+	// mode_rules: per-session-key permission mode overrides, e.g.
+	// [projects.agent.options.mode_rules]
+	// "qq:<userID>" = "full-auto"
+	modeRules := parseModeRules(opts["mode_rules"])
 	backend, _ := opts["backend"].(string)
 	appServerURL, _ := opts["app_server_url"].(string)
 	codexHome, _ := opts["codex_home"].(string)
@@ -96,6 +101,7 @@ func New(opts map[string]any) (core.Agent, error) {
 		model:           model,
 		reasoningEffort: normalizeReasoningEffort(reasoningEffort),
 		mode:            mode,
+		modeRules:       modeRules,
 		backend:         backend,
 		appServerURL:    appServerURL,
 		codexHome:       strings.TrimSpace(codexHome),
@@ -126,6 +132,30 @@ func normalizeAppServerURL(raw string) string {
 		return "stdio://"
 	}
 	return url
+}
+
+// parseModeRules parses the mode_rules agent option: a map of session-key
+// patterns to permission modes. Both TOML string maps and generic maps are
+// accepted. Empty/unknown modes normalize to "suggest" via normalizeMode.
+func parseModeRules(raw any) map[string]string {
+	rules := map[string]string{}
+	switch v := raw.(type) {
+	case map[string]string:
+		for k, m := range v {
+			if k = strings.TrimSpace(k); k != "" {
+				rules[k] = normalizeMode(m)
+			}
+		}
+	case map[string]any:
+		for k, m := range v {
+			if k = strings.TrimSpace(k); k != "" {
+				if s, ok := m.(string); ok {
+					rules[k] = normalizeMode(s)
+				}
+			}
+		}
+	}
+	return rules
 }
 
 func normalizeMode(raw string) string {
@@ -508,6 +538,33 @@ func (a *Agent) GetMode() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.mode
+}
+
+// ResolveMode matches a message against the configured mode_rules and returns
+// the permission mode to use, or "" when no rule matches (caller keeps the
+// project default mode). Match precedence:
+//  1. exact session key match (e.g. "qq:123456789")
+//  2. prefix match — everything before the last ':' (e.g. "qq:987654321" matches
+//     session key "qq:987654321:123456789")
+//  3. "*" wildcard catch-all, when configured
+func (a *Agent) ResolveMode(msg *core.Message) string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if len(a.modeRules) == 0 {
+		return ""
+	}
+	key := msg.SessionKey
+	if key != "" {
+		if m, ok := a.modeRules[key]; ok {
+			return m
+		}
+		if i := strings.LastIndex(key, ":"); i > 0 {
+			if m, ok := a.modeRules[key[:i]]; ok {
+				return m
+			}
+		}
+	}
+	return a.modeRules["*"]
 }
 
 func (a *Agent) WorkspaceAgentOptions() map[string]any {

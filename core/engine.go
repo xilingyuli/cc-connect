@@ -3648,6 +3648,18 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 		defer ws.EndTurn()
 	}
 
+	// Apply agent mode_rules (e.g. admin private chat -> full-auto), keyed by
+	// message session key. Explicit per-message overrides (cron/API) always
+	// win; messages matching no rule keep the project default mode via the
+	// restore below.
+	if msg.ModeOverride == "" {
+		if mr, ok := e.agent.(interface{ ResolveMode(*Message) string }); ok {
+			if m := mr.ResolveMode(msg); m != "" {
+				msg.ModeOverride = m
+			}
+		}
+	}
+
 	// Apply per-message permission mode override (e.g. cron jobs with mode = "bypassPermissions").
 	// Defer restores only when SetLiveMode succeeds for the override.
 	if msg.ModeOverride != "" {

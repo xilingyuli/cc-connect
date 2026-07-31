@@ -1492,6 +1492,20 @@ app_secret = "your-feishu-app-secret"
 # - "full-auto": auto-approve everything with workspace sandbox / 全部自动通过，工作区沙箱保护
 # - "yolo":      bypass all approvals and sandbox (dangerous) / 跳过所有审批和沙箱（危险）
 #
+# Optional: per-session permission mode rules keyed by session key / 可选：按会话 Key 匹配的权限模式规则
+# Session keys are platform-specific, e.g. QQ private chat = "qq:<userID>",
+# QQ shared group chat = "qq:g:<groupID>", QQ per-user group chat =
+# "qq:<groupID>:<userID>".
+# 会话 Key 形如：QQ 私聊 "qq:<QQ号>"、共享群会话 "qq:g:<群号>"、群内每人一会话 "qq:<群号>:<QQ号>"。
+# Match precedence / 匹配优先级: exact session key > prefix before last ':' > "*" wildcard.
+# Messages matching no rule fall back to `mode` above — keep it conservative.
+# 未命中任何规则的消息回退到上面的 `mode`（建议保留最保守档）。
+#
+# [projects.agent.options.mode_rules]
+# "qq:<ADMIN_QQ>" = "full-auto"  # admin private chat -> full permissions / 管理员私聊全权限
+# "qq:g:<GROUP_ID>" = "auto-edit" # a specific group / 指定群
+# "qq:*" = "suggest"             # catch-all for other QQ private chats / 其余 QQ 私聊兜底
+#
 # Optional: specify a model / 可选：指定模型
 # model = "o3"
 #

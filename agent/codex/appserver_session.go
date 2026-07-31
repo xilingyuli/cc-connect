@@ -393,6 +393,16 @@ func (s *appServerSession) applyThreadRuntimeState(workDir, model string, effort
 	s.effort = normalizeRuntimeReasoningEffort(stringValue(effort))
 }
 
+// SetLiveMode implements core.LiveModeSwitcher: applies a permission-mode
+// override for the next app-server request. threadRequestParams and Send read
+// s.mode per turn, so the change takes effect without reconnecting.
+func (s *appServerSession) SetLiveMode(mode string) bool {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	s.mode = normalizeMode(mode)
+	return true
+}
+
 func (s *appServerSession) refreshUsage(ctx context.Context) error {
 	timeout := appServerUsageRefreshTimeout
 	if ctx != nil {

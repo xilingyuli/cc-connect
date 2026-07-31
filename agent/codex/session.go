@@ -115,6 +115,16 @@ func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, 
 	return cs, nil
 }
 
+// SetLiveMode implements core.LiveModeSwitcher: applies a permission-mode
+// override for the next Send. buildExecArgs re-reads cs.mode on every turn,
+// so the change takes effect without restarting the process. Turns are
+// serialized per session by the engine, so the unsynchronized write is
+// consistent with existing access patterns.
+func (cs *codexSession) SetLiveMode(mode string) bool {
+	cs.mode = normalizeMode(mode)
+	return true
+}
+
 // Send launches a codex subprocess.
 // If a threadID exists (from a prior turn or resume), uses `codex exec resume <id> <prompt>`.
 // Otherwise uses `codex exec <prompt>` to start a new conversation.
