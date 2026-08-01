@@ -581,6 +581,9 @@ func main() {
 			engine.SetDisabledCommands(proj.DisabledCommands)
 		}
 
+		// Wire all-commands-admin toggle
+		engine.SetAdminOnlyCommands(proj.AdminOnlyCommands)
+
 		// Wire admin allowlist for privileged commands
 		engine.SetAdminFrom(proj.AdminFrom)
 
@@ -1820,6 +1823,9 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 	// Reload disabled commands
 	engine.SetDisabledCommands(proj.DisabledCommands)
 
+	// Reload all-commands-admin toggle
+	engine.SetAdminOnlyCommands(proj.AdminOnlyCommands)
+
 	// Reload admin allowlist
 	engine.SetAdminFrom(proj.AdminFrom)
 
@@ -2075,6 +2081,15 @@ func wireGroupObserver(engine *core.Engine, platforms []core.Platform, obs *obse
 			SetGroupMessagePolicy(func(msg *core.Message) (bool, string, string, bool))
 		}); ok {
 			hook.SetGroupMessagePolicy(func(msg *core.Message) (bool, string, string, bool) {
+				// 前缀判定优先级最高：#/* 开头一律舍弃（Miao-Yunzai 处理），
+				// / 开头直接走 cc-connect 命令处理，不进插件判别。
+				content := strings.TrimSpace(msg.Content)
+				if strings.HasPrefix(content, "#") || strings.HasPrefix(content, "*") {
+					return false, "", "", false
+				}
+				if strings.HasPrefix(content, "/") {
+					return true, msg.Content, "", false
+				}
 				d := obs.Decide(observer.IncomingMessage{
 					SessionKey: msg.SessionKey,
 					UserName:   msg.UserName,

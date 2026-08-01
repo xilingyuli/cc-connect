@@ -377,8 +377,9 @@ type Engine struct {
 
 	disabledCmds map[string]bool
 	adminFrom    string           // comma-separated user IDs for privileged commands; "*" = all allowed users; "" = deny
+	adminOnly    bool             // true = all builtin commands require admin (admin_only_commands config)
 	userRoles    *UserRoleManager // nil = legacy mode (no per-user policies)
-	userRolesMu  sync.RWMutex     // protects userRoles, disabledCmds, and adminFrom
+	userRolesMu  sync.RWMutex     // protects userRoles, disabledCmds, adminFrom, and adminOnly
 
 	rateLimiter       *RateLimiter
 	outgoingRL        *OutgoingRateLimiter
@@ -1196,6 +1197,14 @@ func (e *Engine) isAdmin(userID string) bool {
 		}
 	}
 	return false
+}
+
+// SetAdminOnlyCommands sets whether every builtin command requires admin
+// authorization. When false (default), only the built-in privileged list does.
+func (e *Engine) SetAdminOnlyCommands(adminOnly bool) {
+	e.userRolesMu.Lock()
+	e.adminOnly = adminOnly
+	e.userRolesMu.Unlock()
 }
 
 // SetBannedWords replaces the banned words list.
@@ -6300,7 +6309,10 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		return true
 	}
 
-	if cmdID != "" && privilegedCommands[cmdID] && !e.isAdmin(msg.UserID) {
+	e.userRolesMu.RLock()
+	adminOnlyAll := e.adminOnly
+	e.userRolesMu.RUnlock()
+	if cmdID != "" && !e.isAdmin(msg.UserID) && (privilegedCommands[cmdID] || adminOnlyAll) {
 		slog.Info("audit: command_blocked",
 			"user_id", msg.UserID, "platform", msg.Platform,
 			"project", e.name, "command", cmdID, "reason", "unauthorized")
