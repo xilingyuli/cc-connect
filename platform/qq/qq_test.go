@@ -344,3 +344,28 @@ func TestHandleMessage_GroupMessagePolicy(t *testing.T) {
 		t.Fatalf("@ params wrong: effort=%q suppress=%v", forwarded[1].ReasoningEffortOverride, forwarded[1].SuppressProgress)
 	}
 }
+
+func TestParseMessageReplySegment(t *testing.T) {
+	p := &Platform{}
+	payload := map[string]any{
+		"message": []any{
+			map[string]any{"type": "reply", "data": map[string]any{"id": "888"}},
+			map[string]any{"type": "text", "data": map[string]any{"text": "你们怎么看"}},
+		},
+	}
+	text, _, _, _, quotedID := p.parseMessage(payload, "group", 123)
+	if text != "你们怎么看" || quotedID != "888" {
+		t.Fatalf("segment path: text=%q quotedID=%q", text, quotedID)
+	}
+}
+
+func TestParseMessageReplyRawFallback(t *testing.T) {
+	p := &Platform{}
+	payload := map[string]any{
+		"raw_message": "[CQ:reply,id=777]你们怎么看",
+	}
+	text, _, _, _, quotedID := p.parseMessage(payload, "group", 123)
+	if text != "你们怎么看" || quotedID != "777" {
+		t.Fatalf("raw path: text=%q quotedID=%q", text, quotedID)
+	}
+}

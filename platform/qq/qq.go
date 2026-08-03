@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,8 @@ import (
 	"github.com/chenhg5/cc-connect/core"
 	"github.com/gorilla/websocket"
 )
+
+var cqReplyRe = regexp.MustCompile(`\[CQ:reply[^\]]*id=(\d+)[^\]]*\]`)
 
 func init() {
 	core.RegisterPlatform("qq", New)
@@ -206,11 +209,13 @@ func (p *Platform) handleMessage(payload map[string]any) {
 		return
 	}
 
+	var msgTimeMs int64
 	if ts, ok := payload["time"].(float64); ok && ts > 0 {
 		if core.IsOldMessage(time.Unix(int64(ts), 0)) {
 			slog.Debug("qq: ignoring old message after restart", "time", int64(ts))
 			return
 		}
+		msgTimeMs = int64(ts * 1000)
 	}
 
 	msgIDStr := strconv.FormatInt(messageID, 10)
@@ -236,7 +241,7 @@ func (p *Platform) handleMessage(payload map[string]any) {
 	}
 
 	// Parse message content from CQ message array or raw_message
-	text, images, files, audio := p.parseMessage(payload, msgType, groupID)
+	text, images, files, audio, quotedID := p.parseMessage(payload, msgType, groupID)
 	if text == "" && len(images) == 0 && len(files) == 0 && audio == nil {
 		return
 	}
@@ -266,18 +271,20 @@ func (p *Platform) handleMessage(payload map[string]any) {
 	mentioned := msgType == "group" && p.isSelfMentioned(payload)
 
 	msg := &core.Message{
-		SessionKey: sessionKey,
-		Platform:   "qq",
-		MessageID:  strconv.FormatInt(messageID, 10),
-		UserID:     strconv.FormatInt(userID, 10),
-		UserName:   userName,
-		ChatName:   chatName,
-		Content:    text,
-		Images:     images,
-		Files:      files,
-		Audio:      audio,
-		ReplyCtx:   rctx,
-		Mentioned:  mentioned,
+		SessionKey:        sessionKey,
+		Platform:          "qq",
+		MessageID:         strconv.FormatInt(messageID, 10),
+		QuotedMessageID:   quotedID,
+		UserID:            strconv.FormatInt(userID, 10),
+		UserName:          userName,
+		ChatName:          chatName,
+		Content:           text,
+		UserMessageTimeMs: msgTimeMs,
+		Images:            images,
+		Files:             files,
+		Audio:             audio,
+		ReplyCtx:          rctx,
+		Mentioned:         mentioned,
 	}
 
 	if msgType == "group" && p.groupMessagePolicy != nil {
@@ -345,11 +352,12 @@ func (p *Platform) isSelfMentioned(payload map[string]any) bool {
 	return false
 }
 
-func (p *Platform) parseMessage(payload map[string]any, msgType string, groupID int64) (string, []core.ImageAttachment, []core.FileAttachment, *core.AudioAttachment) {
+func (p *Platform) parseMessage(payload map[string]any, msgType string, groupID int64) (string, []core.ImageAttachment, []core.FileAttachment, *core.AudioAttachment, string) {
 	var textParts []string
 	var images []core.ImageAttachment
 	var files []core.FileAttachment
 	var audio *core.AudioAttachment
+	var quotedID string
 
 	// OneBot message can be array of segments or a string
 	switch msg := payload["message"].(type) {
@@ -369,6 +377,13 @@ func (p *Platform) parseMessage(payload map[string]any, msgType string, groupID 
 			case "text":
 				if text, ok := data["text"].(string); ok {
 					textParts = append(textParts, text)
+				}
+			case "reply":
+				switch id := data["id"].(type) {
+				case string:
+					quotedID = id
+				case float64:
+					quotedID = strconv.FormatInt(int64(id), 10)
 				}
 			case "image":
 				if url, ok := data["url"].(string); ok && url != "" {
@@ -520,11 +535,14 @@ func (p *Platform) parseMessage(payload map[string]any, msgType string, groupID 
 	default:
 		// raw_message fallback (string with CQ codes)
 		if raw, ok := payload["raw_message"].(string); ok {
+			if m := cqReplyRe.FindStringSubmatch(raw); len(m) > 1 {
+				quotedID = m[1]
+			}
 			textParts = append(textParts, stripCQCodes(raw))
 		}
 	}
 
-	return strings.TrimSpace(strings.Join(textParts, "")), images, files, audio
+	return strings.TrimSpace(strings.Join(textParts, "")), images, files, audio, quotedID
 }
 
 // Reply sends a message as a reply to an incoming message.

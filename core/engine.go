@@ -515,6 +515,7 @@ type interactiveState struct {
 	approveAll               bool            // when true, auto-approve all permission requests for this session
 	sessionMode              string          // permission mode fixed at session start (mode_rules); /mode updates it
 	suppressProgress         bool            // true = do not send thinking/tool progress for this turn
+	splitReplies             bool            // true = deliver each "---"-separated reply as its own message
 	fromVoice                bool            // true if current turn originated from voice transcription
 	sideText                 string
 	deleteMode               *deleteModeState
@@ -3686,6 +3687,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	}
 	state := e.getOrCreateInteractiveStateWith(interactiveKey, p, msg.ReplyCtx, session, sessions, agentOverride, ccSessionKey)
 	state.suppressProgress = msg.SuppressProgress
+	state.splitReplies = msg.SplitReplies
 
 	// Set workspaceDir on the state for idle reaper identification
 	if workspaceDir != "" {
@@ -5464,6 +5466,22 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 			}
 
+			// Observer batch turns may carry several independent replies in one
+			// response, separated by a "---" marker line; each becomes its own
+			// platform message. Split before the send branches (and before the
+			// message.sent hook) so silence/real-reply tracking stays correct.
+			var extraReplies []string
+			if !isSilent && state.splitReplies {
+				var first string
+				first, extraReplies = splitBatchReplies(cleanResponse)
+				if first == "" {
+					isSilent = true
+				} else {
+					cleanResponse = first
+					baseResponse = first
+				}
+			}
+
 			if !isSilent {
 				e.hooks.Emit(HookEvent{
 					Event:      HookEventMessageSent,
@@ -5591,6 +5609,11 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					cardMessageID = nil
 				}
 				slog.Info("silent reply suppressed", "session", session.ID)
+				e.hooks.Emit(HookEvent{
+					Event:      HookEventTurnSilent,
+					SessionKey: sessionKey,
+					Platform:   p.Name(),
+				})
 			} else if hasRichCard {
 				parts := []string{fullResponse}
 				if splitter, ok := p.(MarkdownTableSplitter); ok {
@@ -5664,6 +5687,13 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			} else {
 				slog.Debug("EventResult: sending via p.Send (preview inactive or failed)", "response_len", len(fullResponse), "footer_len", len(statusFooter))
 				if !sendChunksWithStatusFooter(e.ctx, p, replyCtx, fullResponse, statusFooter, sendWorkspaceWithError) {
+					return
+				}
+			}
+
+			// Deliver the remaining batch replies as separate messages.
+			for _, part := range extraReplies {
+				if !sendChunksWithStatusFooter(e.ctx, p, replyCtx, part, "", sendWorkspaceWithError) {
 					return
 				}
 			}
@@ -5942,6 +5972,11 @@ channelClosed:
 		if isSilentReply(fullResponse) {
 			sp.discard()
 			slog.Info("silent reply suppressed (channel closed)", "session", session.ID)
+			e.hooks.Emit(HookEvent{
+				Event:      HookEventTurnSilent,
+				SessionKey: sessionKey,
+				Platform:   p.Name(),
+			})
 			return
 		}
 		if stripped, ok := stripTrailingSilent(fullResponse); ok {
@@ -15458,6 +15493,39 @@ func splitMessage(text string, maxLen int) []string {
 		runes = runes[end:]
 	}
 	return chunks
+}
+
+// batchReplySeparator is the marker line separating independent replies in an
+// observer batch turn; each reply is delivered as its own platform message.
+const batchReplySeparator = "---"
+
+// splitBatchReplies splits an observer batch response into independent replies
+// on lines that consist solely of the batchReplySeparator. Returns the first
+// reply and any additional replies; empty and NO_REPLY-only parts are dropped.
+func splitBatchReplies(text string) (string, []string) {
+	var parts []string
+	var cur strings.Builder
+	flush := func() {
+		part := strings.TrimSpace(cur.String())
+		cur.Reset()
+		if part == "" || isSilentReply(part) {
+			return
+		}
+		parts = append(parts, part)
+	}
+	for _, ln := range strings.Split(text, "\n") {
+		if strings.TrimSpace(ln) == batchReplySeparator {
+			flush()
+			continue
+		}
+		cur.WriteString(ln)
+		cur.WriteString("\n")
+	}
+	flush()
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return parts[0], parts[1:]
 }
 
 // sendTTSReply synthesizes fullResponse text and sends audio to the platform.

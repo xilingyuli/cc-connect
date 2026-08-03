@@ -7470,6 +7470,49 @@ func TestSplitMessageUTF8Safety(t *testing.T) {
 	})
 }
 
+func TestSplitBatchReplies(t *testing.T) {
+	t.Run("single reply without marker", func(t *testing.T) {
+		first, rest := splitBatchReplies("小明：这个问题我来答")
+		if first != "小明：这个问题我来答" || len(rest) != 0 {
+			t.Fatalf("unexpected split: first=%q rest=%v", first, rest)
+		}
+	})
+
+	t.Run("multiple replies split on marker", func(t *testing.T) {
+		text := "小明：第一个问题\n\n---\n小红：第二个问题\n---\n小刚：第三个问题"
+		first, rest := splitBatchReplies(text)
+		if first != "小明：第一个问题" {
+			t.Fatalf("first = %q", first)
+		}
+		if len(rest) != 2 || rest[0] != "小红：第二个问题" || rest[1] != "小刚：第三个问题" {
+			t.Fatalf("rest = %v", rest)
+		}
+	})
+
+	t.Run("marker inside text is ignored", func(t *testing.T) {
+		text := "这里有个 --- 不是分隔\n---\n第二条"
+		first, rest := splitBatchReplies(text)
+		if first != "这里有个 --- 不是分隔" || len(rest) != 1 || rest[0] != "第二条" {
+			t.Fatalf("first=%q rest=%v", first, rest)
+		}
+	})
+
+	t.Run("empty and NO_REPLY parts dropped", func(t *testing.T) {
+		text := "---\nNO_REPLY\n---\n只有这条\n---\n"
+		first, rest := splitBatchReplies(text)
+		if first != "只有这条" || len(rest) != 0 {
+			t.Fatalf("first=%q rest=%v", first, rest)
+		}
+	})
+
+	t.Run("all silent returns empty", func(t *testing.T) {
+		first, rest := splitBatchReplies("NO_REPLY")
+		if first != "" || len(rest) != 0 {
+			t.Fatalf("first=%q rest=%v", first, rest)
+		}
+	})
+}
+
 // ── setupMemoryFile / /cron setup / /bind setup ──────────────
 
 type stubMemoryAgent struct {

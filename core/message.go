@@ -167,24 +167,27 @@ type LocationAttachment struct {
 
 // Message represents a unified incoming message from any platform.
 type Message struct {
-	SessionKey   string // unique key for user context, e.g. "feishu:{chatID}:{userID}"
-	Platform     string
-	MessageID    string // platform message ID for tracing
-	Recalled     bool   // true for platform message recall/delete events targeting MessageID
-	ChannelID    string
-	UserID       string
-	UserName     string
-	ChatName     string // human-readable chat/group name (optional)
-	Content      string
-	Images       []ImageAttachment   // attached images (if any)
-	Files        []FileAttachment    // attached files (if any)
-	Audio        *AudioAttachment    // voice message (if any)
-	Location     *LocationAttachment // geographical location (if any)
-	ExtraContent string              // platform-enriched content (e.g. location text, reply quote) prepended for the agent
-	ChannelKey   string              // platform-provided channel identifier for workspace binding (optional)
-	ReplyCtx     any                 // platform-specific context needed for replying
-	FromVoice    bool                // true if message originated from voice transcription
-	ModeOverride string              // if set, temporarily override agent permission mode for this message
+	SessionKey string // unique key for user context, e.g. "feishu:{chatID}:{userID}"
+	Platform   string
+	MessageID  string // platform message ID for tracing
+	// QuotedMessageID is the platform message ID this message replies to
+	// (e.g. a QQ quote/reply), when the platform can provide it.
+	QuotedMessageID string
+	Recalled        bool // true for platform message recall/delete events targeting MessageID
+	ChannelID       string
+	UserID          string
+	UserName        string
+	ChatName        string // human-readable chat/group name (optional)
+	Content         string
+	Images          []ImageAttachment   // attached images (if any)
+	Files           []FileAttachment    // attached files (if any)
+	Audio           *AudioAttachment    // voice message (if any)
+	Location        *LocationAttachment // geographical location (if any)
+	ExtraContent    string              // platform-enriched content (e.g. location text, reply quote) prepended for the agent
+	ChannelKey      string              // platform-provided channel identifier for workspace binding (optional)
+	ReplyCtx        any                 // platform-specific context needed for replying
+	FromVoice       bool                // true if message originated from voice transcription
+	ModeOverride    string              // if set, temporarily override agent permission mode for this message
 	// IsPermissionResponse is set by inline-button / card-action paths in
 	// platforms when a synthesized message is forwarded as a permission
 	// decision (e.g. Telegram handleCallbackQuery for perm:allow/deny,
@@ -209,6 +212,11 @@ type Message struct {
 	// SuppressProgress, when true, suppresses thinking/tool progress messages
 	// for this turn while still delivering the final reply.
 	SuppressProgress bool
+	// SplitReplies, when true, tells the engine that the final response may
+	// contain several independent replies separated by a "---" marker line;
+	// each reply is delivered as its own platform message. Used by the group
+	// observer for merged batch turns.
+	SplitReplies bool
 }
 
 // EventType distinguishes different kinds of agent output.

@@ -629,6 +629,9 @@ func main() {
 				if ev.Event == core.HookEventMessageSent && isQQGroupSession(ev.SessionKey) {
 					obs.OnGroupReply(ev.SessionKey)
 				}
+				if ev.Event == core.HookEventTurnSilent && isQQGroupSession(ev.SessionKey) {
+					obs.OnSilentTurn(ev.SessionKey)
+				}
 			})
 		}
 		if len(cfg.Hooks) > 0 || obs != nil {
@@ -2069,6 +2072,22 @@ func isQQGroupSession(key string) bool {
 	return len(parts) == 3
 }
 
+// mediaKindOf summarizes the media carried by a message for the observer
+// ("图片"/"语音"/"文件"), so media-only messages stay visible as context even
+// when they have no text content.
+func mediaKindOf(msg *core.Message) string {
+	if len(msg.Images) > 0 {
+		return "图片"
+	}
+	if msg.Audio != nil {
+		return "语音"
+	}
+	if len(msg.Files) > 0 {
+		return "文件"
+	}
+	return ""
+}
+
 // wireGroupObserver connects the shadow-persona observer to the project's
 // engine and platforms: the group-message forwarding policy, the deferred
 // (pending) decision forwarder, the in-flight busy check, and the ignore
@@ -2077,6 +2096,33 @@ func wireGroupObserver(engine *core.Engine, platforms []core.Platform, obs *obse
 	obs.SetIgnorePatterns(blockReplyPatterns)
 	obs.SetSessionBusy(engine.IsSessionBusy)
 	for _, p := range platforms {
+		// Batch/proactive decisions are delivered by injecting a synthetic
+		// message into the engine (the plugin's own channel), so the platform
+		// policy hook keeps its original narrow contract.
+		var injectTurn func(sessionKey string, d observer.Decision) error
+		if inj, ok := p.(interface {
+			Inject(*core.Message)
+			ReconstructReplyCtx(string) (any, error)
+		}); ok {
+			injectTurn = func(sessionKey string, d observer.Decision) error {
+				rc, err := inj.ReconstructReplyCtx(sessionKey)
+				if err != nil {
+					return err
+				}
+				inj.Inject(&core.Message{
+					SessionKey:              sessionKey,
+					Platform:                "qq",
+					Content:                 d.Content,
+					ReplyCtx:                rc,
+					ReasoningEffortOverride: d.Effort,
+					SuppressProgress:        d.SuppressProgress,
+					SplitReplies:            d.SplitReplies,
+				})
+				return nil
+			}
+			obs.SetForwarder(injectTurn)
+		}
+
 		if hook, ok := p.(interface {
 			SetGroupMessagePolicy(func(msg *core.Message) (bool, string, string, bool))
 		}); ok {
@@ -2091,33 +2137,27 @@ func wireGroupObserver(engine *core.Engine, platforms []core.Platform, obs *obse
 					return true, msg.Content, "", false
 				}
 				d := obs.Decide(observer.IncomingMessage{
-					SessionKey: msg.SessionKey,
-					UserName:   msg.UserName,
-					ChatName:   msg.ChatName,
-					Content:    msg.Content,
-					Mentioned:  msg.Mentioned,
+					SessionKey:        msg.SessionKey,
+					MessageID:         msg.MessageID,
+					UserID:            msg.UserID,
+					UserName:          msg.UserName,
+					ChatName:          msg.ChatName,
+					Content:           msg.Content,
+					Mentioned:         msg.Mentioned,
+					QuotedMessageID:   msg.QuotedMessageID,
+					MediaKind:         mediaKindOf(msg),
+					UserMessageTimeMs: msg.UserMessageTimeMs,
 				})
-				return d.Forward, d.Content, d.Effort, d.SuppressProgress
-			})
-		}
-		if inj, ok := p.(interface {
-			Inject(*core.Message)
-			ReconstructReplyCtx(string) (any, error)
-		}); ok {
-			obs.SetForwarder(func(sessionKey string, d observer.Decision) error {
-				rc, err := inj.ReconstructReplyCtx(sessionKey)
-				if err != nil {
-					return err
+				if d.Forward && d.SplitReplies && injectTurn != nil {
+					// Batch turn: injected by the plugin so the split-reply
+					// delivery flag travels with the injected message; the
+					// original platform message is consumed here.
+					if err := injectTurn(msg.SessionKey, d); err != nil {
+						slog.Warn("observer: inject batch decision failed", "session", msg.SessionKey, "error", err)
+					}
+					return false, "", "", false
 				}
-				inj.Inject(&core.Message{
-					SessionKey:              sessionKey,
-					Platform:                "qq",
-					Content:                 d.Content,
-					ReplyCtx:                rc,
-					ReasoningEffortOverride: d.Effort,
-					SuppressProgress:        d.SuppressProgress,
-				})
-				return nil
+				return d.Forward, d.Content, d.Effort, d.SuppressProgress
 			})
 		}
 	}
