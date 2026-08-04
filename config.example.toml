@@ -125,6 +125,13 @@ level = "info" # debug, info, warn, error
 #                                # 在助手回复末尾显示「[ctx: ~N%]」上下文占用提示（默认 true 显示）
 # reply_footer = true            # Show Codex-like footer on assistant replies (default: true)
 #                                # 在助手回复底部显示类似 Codex 的状态行（默认 true 显示）
+# footer_colloquial = ["^qq:g:"] # Regex patterns matched against session keys that switch
+#                                # the reply footer to the colloquial one-liner
+#                                # (model + effort phrase + remaining context %); matching
+#                                # sessions show ONLY that copy, no workdir/token lines.
+#                                # 口语化小尾巴：正则匹配会话 id，命中则只显示
+#                                # 「模型CPU冒烟了/CPU狂烧/深度思考/暗中沉思 · 智商剩余X%」，
+#                                # 不显示工作目录/令牌等其他信息（默认空 = 原规则）
 
 # Per-project override: each [[projects]] entry may have its own [projects.display]
 # block that overrides individual fields of the global [display] block above.

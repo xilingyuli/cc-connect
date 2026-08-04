@@ -605,6 +605,7 @@ func main() {
 				ToolMessages:     tool,
 				HistoryMaxLen:    &historyMaxLen,
 			})
+			engine.SetFooterColloquialPatterns(config.EffectiveFooterColloquial(cfg, &proj))
 		}
 
 		// Wire shell configuration

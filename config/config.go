@@ -203,6 +203,9 @@ type DisplayConfig struct {
 	HistoryMaxLen        *int    `toml:"history_max_len"`        // max chars per /history entry; 0 = no truncation; default 1000
 	ShowContextIndicator *bool   `toml:"show_context_indicator"` // whether [ctx: ~N%] suffix is shown; default true
 	ReplyFooter          *bool   `toml:"reply_footer"`           // whether Codex-like footer is shown; default true
+	// FooterColloquial: regex patterns matched against the session key; matching
+	// sessions get the colloquial one-line footer instead of the standard one.
+	FooterColloquial []string `toml:"footer_colloquial,omitempty"`
 }
 
 // StreamPreviewConfig controls real-time streaming preview in IM.
@@ -930,6 +933,18 @@ func EffectiveHistoryMaxLen(cfg *Config, proj *ProjectConfig) int {
 		return *cfg.Display.HistoryMaxLen
 	}
 	return 1000
+}
+
+// EffectiveFooterColloquial returns the colloquial reply-footer regex patterns
+// for the project. Resolution: project [display] > global [display] > empty.
+func EffectiveFooterColloquial(cfg *Config, proj *ProjectConfig) []string {
+	if proj != nil && proj.Display != nil && len(proj.Display.FooterColloquial) > 0 {
+		return proj.Display.FooterColloquial
+	}
+	if cfg != nil {
+		return cfg.Display.FooterColloquial
+	}
+	return nil
 }
 
 // EffectiveShell returns the shell binary, flag, and init command for the project.

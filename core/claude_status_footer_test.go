@@ -46,6 +46,64 @@ func TestBuildClaudeStatusLineFooter_NilUsage(t *testing.T) {
 	}
 }
 
+func TestBuildColloquialStatusFooter(t *testing.T) {
+	e := newClaudeFooterEngine()
+	session := &controllableAgentSession{
+		model:           "deepseek-v4-flash",
+		reasoningEffort: "low",
+		contextUsage: &ContextUsage{
+			ContextWindow: 1000,
+			UsedTokens:    270,
+		},
+	}
+	got := e.buildColloquialStatusFooter(nil, session, 0)
+	want := "deepseek-v4-flash暗中沉思 · 智商剩余73%"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildColloquialStatusFooterEffortPhrases(t *testing.T) {
+	cases := []struct{ effort, phrase string }{
+		{"xhigh", "CPU冒烟了"},
+		{"high", "CPU狂烧"},
+		{"medium", "深度思考"},
+		{"low", "暗中沉思"},
+		{"minimal", "暗中沉思"},
+		{"", "深度思考"},
+	}
+	for _, c := range cases {
+		e := newClaudeFooterEngine()
+		session := &controllableAgentSession{model: "m", reasoningEffort: c.effort}
+		got := e.buildColloquialStatusFooter(nil, session, 0)
+		if !strings.Contains(got, c.phrase) {
+			t.Errorf("effort %q: got %q, want phrase %q", c.effort, got, c.phrase)
+		}
+	}
+}
+
+func TestBuildColloquialStatusFooterFallbackRemaining(t *testing.T) {
+	e := newClaudeFooterEngine()
+	session := &controllableAgentSession{model: "m", reasoningEffort: "high"}
+	// No context usage: fall back to the input-token heuristic
+	// (30000 of 200k → 15% used → 85% remaining).
+	got := e.buildColloquialStatusFooter(nil, session, 30000)
+	if !strings.Contains(got, "智商剩余85%") {
+		t.Fatalf("got %q, want 智商剩余85%%", got)
+	}
+}
+
+func TestFooterColloquialPatterns(t *testing.T) {
+	e := &Engine{}
+	e.SetFooterColloquialPatterns([]string{"^qq:g:", "[bad["})
+	if !e.colloquialFooterFor("qq:g:123") {
+		t.Fatal("group session should match ^qq:g:")
+	}
+	if e.colloquialFooterFor("qq:786979248") {
+		t.Fatal("private session should not match the group pattern")
+	}
+}
+
 func TestBuildClaudeStatusLineFooter_NoCacheTokens(t *testing.T) {
 	// Other agents (codex/gemini) populate ContextUsage without cache
 	// tokens; we must NOT emit the claude-style footer for them.

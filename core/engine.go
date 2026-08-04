@@ -408,6 +408,10 @@ type Engine struct {
 	showContextIndicator bool
 	showWorkdirIndicator bool
 	replyFooterEnabled   bool
+	// footerColloquial are regex patterns matched against the session key.
+	// Matching sessions get the colloquial one-line footer (model + effort
+	// phrase + remaining context) instead of the standard footer lines.
+	footerColloquial []*regexp.Regexp
 
 	// When true, /list etc. only show sessions tracked by cc-connect,
 	// hiding sessions created by direct CLI usage in the same work_dir.
@@ -934,6 +938,33 @@ func (e *Engine) SetShowWorkdirIndicator(show bool) {
 // no-ops.
 func (e *Engine) SetReplyFooterEnabled(show bool) {
 	e.replyFooterEnabled = show
+}
+
+// SetFooterColloquialPatterns registers regex patterns (matched against the
+// session key) that switch the reply footer to the colloquial one-liner.
+// Invalid patterns are ignored.
+func (e *Engine) SetFooterColloquialPatterns(patterns []string) {
+	var res []*regexp.Regexp
+	for _, p := range patterns {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		if r, err := regexp.Compile(p); err == nil {
+			res = append(res, r)
+		}
+	}
+	e.footerColloquial = res
+}
+
+// colloquialFooterFor reports whether the session key matches any colloquial
+// footer pattern.
+func (e *Engine) colloquialFooterFor(sessionKey string) bool {
+	for _, re := range e.footerColloquial {
+		if re.MatchString(sessionKey) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetFilterExternalSessions controls whether /list, /switch, /delete, etc.
@@ -5514,7 +5545,14 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						footerContext = fmt.Sprintf("[ctx: ~%d%%]", selfPct)
 					}
 				}
-				if status := e.buildClaudeStatusLineFooter(replyAgent, state.agentSession, workspaceDir); status != "" {
+				if e.colloquialFooterFor(sessionKey) {
+					// Colloquial footer replaces the standard lines entirely
+					// (no model/effort/tokens/workdir beyond the custom copy).
+					if status := e.buildColloquialStatusFooter(replyAgent, state.agentSession, event.InputTokens); status != "" {
+						statusFooter = status
+						legacyStatusFooter = status
+					}
+				} else if status := e.buildClaudeStatusLineFooter(replyAgent, state.agentSession, workspaceDir); status != "" {
 					statusFooter = status
 				} else if footer := e.buildReplyFooter(replyAgent, state.agentSession, workspaceDir, footerContext); footer != "" {
 					statusFooter = footer
@@ -7165,6 +7203,64 @@ func buildClaudeStatusLineFooter(model, effort string, usage *ContextUsage) stri
 	return strings.Join(parts, " · ")
 }
 
+// buildColloquialStatusFooter renders the colloquial one-line footer for
+// sessions matched by the footer colloquial rules:
+//
+//	deepseek-v4-flashCPU狂烧 · 智商剩余73%
+//
+// The effort phrase follows the per-turn reasoning effort (high → CPU狂烧,
+// medium → 深度思考, low → 暗中沉思). "智商剩余" is the percentage of the
+// context window still remaining. When no context usage is available it falls
+// back to the input-token heuristic; without either, the IQ segment is omitted.
+func (e *Engine) buildColloquialStatusFooter(agent Agent, session AgentSession, inputTokens int) string {
+	if !e.replyFooterEnabled {
+		return ""
+	}
+	model := replyFooterModel(session, agent)
+	effort := replyFooterReasoningEffort(session, agent)
+
+	remaining := -1
+	if usage := replyFooterSessionContextUsage(session); usage != nil {
+		if pct, ok := contextRemainingPercent(usage); ok {
+			remaining = pct
+		}
+	}
+	if remaining < 0 && inputTokens > 0 {
+		used := inputTokens * 100 / modelContextWindow
+		if used > 100 {
+			used = 100
+		}
+		remaining = 100 - used
+	}
+
+	var sb strings.Builder
+	sb.WriteString(model)
+	sb.WriteString(effortPhrase(effort))
+	if remaining >= 0 {
+		fmt.Fprintf(&sb, " · 智商剩余%d%%", remaining)
+	}
+	if strings.TrimSpace(sb.String()) == "" {
+		return ""
+	}
+	return sb.String()
+}
+
+// effortPhrase maps a reasoning effort value to its colloquial phrase.
+func effortPhrase(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "xhigh":
+		return "CPU冒烟了"
+	case "high":
+		return "CPU狂烧"
+	case "low", "minimal":
+		return "暗中沉思"
+	case "medium":
+		return "深度思考"
+	default:
+		return "深度思考"
+	}
+}
+
 // formatStatusTokenCount renders an integer token count compactly.
 //
 //	< 1000      -> "168"
@@ -7333,11 +7429,21 @@ func replyFooterSessionContextUsage(session AgentSession) *ContextUsage {
 }
 
 func replyFooterContextText(usage *ContextUsage, i18n *I18n) string {
-	if usage == nil || i18n == nil {
+	if i18n == nil {
 		return ""
 	}
-	if usage.ContextWindow <= 0 {
-		return ""
+	if left, ok := contextRemainingPercent(usage); ok {
+		return i18n.Tf(MsgReplyFooterRemaining, left)
+	}
+	return ""
+}
+
+// contextRemainingPercent returns the percentage of the context window still
+// remaining (0-100), with the second value false when no reliable usage data
+// is available.
+func contextRemainingPercent(usage *ContextUsage) (int, bool) {
+	if usage == nil || usage.ContextWindow <= 0 {
+		return 0, false
 	}
 
 	usedTokens := usage.UsedTokens
@@ -7348,7 +7454,7 @@ func replyFooterContextText(usage *ContextUsage, i18n *I18n) string {
 		case usage.InputTokens > 0 || usage.OutputTokens > 0:
 			usedTokens = usage.InputTokens + usage.OutputTokens
 		default:
-			return ""
+			return 0, false
 		}
 	}
 
@@ -7357,7 +7463,7 @@ func replyFooterContextText(usage *ContextUsage, i18n *I18n) string {
 		baseline = 0
 	}
 	if usage.ContextWindow <= baseline {
-		return i18n.Tf(MsgReplyFooterRemaining, 0)
+		return 0, true
 	}
 
 	effectiveWindow := usage.ContextWindow - baseline
@@ -7377,7 +7483,7 @@ func replyFooterContextText(usage *ContextUsage, i18n *I18n) string {
 	if left > 100 {
 		left = 100
 	}
-	return i18n.Tf(MsgReplyFooterRemaining, left)
+	return left, true
 }
 
 func replyFooterWorkDir(session AgentSession, agent Agent, workspaceDir string) string {
