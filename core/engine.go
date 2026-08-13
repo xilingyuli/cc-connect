@@ -3137,6 +3137,47 @@ func (e *Engine) maybeAutoResetSessionOnIdle(p Platform, msg *Message, sessions 
 	return newSession
 }
 
+// ResetSessionIfOversized resets the interactive session for sessionKey to a
+// fresh thread when its current context usage reaches maxTokens. It backs the
+// observer plugin's daily oversized-context policy: the plugin decides when
+// (reset_hour) and passes the threshold; the engine checks the live context and
+// performs the rotation. Sessions with an in-flight turn are skipped so an
+// active conversation is never interrupted. Returns true when a reset happened.
+func (e *Engine) ResetSessionIfOversized(sessionKey string, maxTokens int) bool {
+	if sessionKey == "" || maxTokens <= 0 {
+		return false
+	}
+	ik := e.interactiveKeyForSessionKey(sessionKey)
+	e.interactiveMu.Lock()
+	state, ok := e.interactiveStates[ik]
+	var used int
+	if ok && state != nil && state.agentSession != nil {
+		if r, ok2 := state.agentSession.(ContextUsageReporter); ok2 {
+			if u := r.GetContextUsage(); u != nil {
+				used = u.UsedTokens
+			}
+		}
+	}
+	e.interactiveMu.Unlock()
+	if used < maxTokens {
+		return false
+	}
+
+	// 不打断正在进行的回合：会话忙则本次跳过（下一天 4 点再试）。
+	s := e.sessions.GetActive(sessionKey)
+	if s == nil || !s.TryLock() {
+		slog.Info("observer: oversized reset skipped (session busy or missing)",
+			"session_key", sessionKey, "used_tokens", used, "threshold", maxTokens)
+		return false
+	}
+	e.cleanupInteractiveState(ik, state)
+	s.UnlockWithoutUpdate()
+	ns := e.sessions.NewSession(sessionKey, "")
+	slog.Info("observer: oversized session reset",
+		"session_key", sessionKey, "used_tokens", used, "threshold", maxTokens, "new_session", ns.ID)
+	return true
+}
+
 // queueMessageForBusySession queues a message for later delivery when the
 // session is busy. The message is NOT sent to agent stdin at queue time;
 // the event loop sends it after the current turn's EventResult is received.

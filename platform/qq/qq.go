@@ -45,6 +45,7 @@ type Platform struct {
 	selfID                int64
 	dedup                 core.MessageDedup
 	groupNameCache        sync.Map // groupID -> group name
+	msgCh                 chan map[string]any
 	httpURL               string   // OneBot HTTP API URL, e.g. "http://127.0.0.1:3000"
 }
 
@@ -74,6 +75,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		allowFrom:             allowFrom,
 		shareSessionInChannel: shareSessionInChannel,
 		groupReplyAll:         groupReplyAll,
+		msgCh:                 make(chan map[string]any, 1024),
 		httpURL:               httpURL,
 	}, nil
 }
@@ -122,6 +124,7 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 	// which disables the self-message filter in handleMessage and lets the bot
 	// respond to its own messages.
 	go p.readLoop(ctx)
+	go p.messageWorker(ctx)
 
 	// Get bot self info
 	if info, err := p.callAPI("get_login_info", nil); err == nil {
@@ -173,6 +176,22 @@ func (p *Platform) readLoop(ctx context.Context) {
 		// Otherwise it's an event
 		postType, _ := payload["post_type"].(string)
 		if postType == "message" {
+			p.msgCh <- payload
+		}
+	}
+}
+
+// messageWorker processes incoming message events serially, keeping the
+// readLoop free to continue reading the WebSocket connection. This prevents a
+// slow message (tool calls, send timeouts) from blocking reception of
+// subsequent messages and API responses. Channel FIFO order preserves
+// per-connection message ordering.
+func (p *Platform) messageWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case payload := <-p.msgCh:
 			p.handleMessage(payload)
 		}
 	}

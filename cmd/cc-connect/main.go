@@ -452,6 +452,7 @@ func main() {
 			}
 			obs = observer.New(obsCfg)
 			wireGroupObserver(engine, platforms, obs, cfg.BlockReplyPatterns)
+			obs.Start() // 每日批量上下文重置定时器（reset_hour + reset_context_threshold）
 			slog.Info("observer: passive group observer enabled", "project", proj.Name, "config", obsPath)
 		}
 		// Wire display settings including show_context_indicator and reply_footer
@@ -2096,6 +2097,9 @@ func mediaKindOf(msg *core.Message) string {
 func wireGroupObserver(engine *core.Engine, platforms []core.Platform, obs *observer.Observer, blockReplyPatterns []string) {
 	obs.SetIgnorePatterns(blockReplyPatterns)
 	obs.SetSessionBusy(engine.IsSessionBusy)
+	// 每日上下文重置策略（reset_hour + reset_context_threshold 在插件配置里）：
+	// 插件决定时机，引擎负责按实际上下文大小执行会话轮换。
+	obs.SetSessionResetter(engine.ResetSessionIfOversized)
 	for _, p := range platforms {
 		// Batch/proactive decisions are delivered by injecting a synthetic
 		// message into the engine (the plugin's own channel), so the platform
