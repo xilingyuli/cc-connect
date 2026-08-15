@@ -2153,14 +2153,21 @@ func wireGroupObserver(engine *core.Engine, platforms []core.Platform, obs *obse
 					MediaKind:         mediaKindOf(msg),
 					UserMessageTimeMs: msg.UserMessageTimeMs,
 				})
-				if d.Forward && d.SplitReplies && injectTurn != nil {
-					// Batch turn: injected by the plugin so the split-reply
-					// delivery flag travels with the injected message; the
-					// original platform message is consumed here.
+				if d.Forward && !d.Direct && injectTurn != nil {
+					// 普通回合：由插件注入合成消息（不对应单条入站消息），
+					// 原始平台消息在此被消费。路由按回合种类
+					// （高优回合 vs 普通回合）判定，不依赖拆条字段——
+					// 拆条只是发送侧属性。
 					if err := injectTurn(msg.SessionKey, d); err != nil {
 						slog.Warn("observer: inject batch decision failed", "session", msg.SessionKey, "error", err)
 					}
 					return false, "", "", false
+				}
+				// 高优回合（@/昵称）保持平台直通路径，提交/排队行为与
+				// 用户元数据不变。SplitReplies 是两种回合通用的发送属性：
+				// 它随消息携带，引擎在置位时按 "---" 拆条发送回复。
+				if d.Forward {
+					msg.SplitReplies = d.SplitReplies
 				}
 				return d.Forward, d.Content, d.Effort, d.SuppressProgress
 			})
