@@ -434,6 +434,8 @@ type Engine struct {
 	initFlowsMu                  sync.Mutex
 	sendWorkDirMu                sync.RWMutex
 	sendWorkDirs                 map[string]string // sessionKey → work_dir assigned by send --cwd
+	sessionAgentMu               sync.RWMutex
+	sessionAgents                map[string]Agent // interactiveKey → per-session agent instance (clone of the project agent; in-memory only)
 
 	// Terminal observation (--observe)
 	observeEnabled    bool
@@ -728,6 +730,7 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 		aliases:               make(map[string]string),
 		interactiveStates:     make(map[string]*interactiveState),
 		sendWorkDirs:          make(map[string]string),
+		sessionAgents:         make(map[string]Agent),
 		platformReady:         make(map[Platform]bool),
 		startedAt:             time.Now(),
 		streamPreview:         DefaultStreamPreviewCfg(),
@@ -4064,6 +4067,81 @@ func (e *Engine) startAgentSession(agent Agent, sessionKey, resumeID string) (Ag
 	return sess, sessionMode, err
 }
 
+// sessionAgentFor returns the per-session agent instance for the given
+// interactive key, cloning the base (project) agent on first use. All
+// command-driven mutations (/model, /mode, /reasoning) go through the
+// returned instance so they never touch the shared project agent or other
+// conversations. Instances are in-memory only: they survive /new within the
+// same conversation and are dropped on daemon restart.
+func (e *Engine) sessionAgentFor(sessionKey string, base Agent) Agent {
+	e.sessionAgentMu.Lock()
+	defer e.sessionAgentMu.Unlock()
+	if a, ok := e.sessionAgents[sessionKey]; ok {
+		return a
+	}
+	if cloner, ok := base.(interface{ CloneSession() Agent }); ok {
+		clone := cloner.CloneSession()
+		e.sessionAgents[sessionKey] = clone
+		return clone
+	}
+	return base
+}
+
+// lookupSessionAgent returns the per-session agent instance for the given
+// interactive key, or nil when the conversation never created one.
+func (e *Engine) lookupSessionAgent(sessionKey string) Agent {
+	e.sessionAgentMu.RLock()
+	defer e.sessionAgentMu.RUnlock()
+	return e.sessionAgents[sessionKey]
+}
+
+// sessionAgentForRead returns the agent to use for reading a session's
+// effective config: the per-session instance when one exists, otherwise base.
+func (e *Engine) sessionAgentForRead(sessionKey string, base Agent) Agent {
+	if a := e.lookupSessionAgent(sessionKey); a != nil {
+		return a
+	}
+	return base
+}
+
+// resetSessionAgentModel reverts the session agent's model/provider to base.
+func (e *Engine) resetSessionAgentModel(sessionKey string, base Agent) {
+	if sa := e.lookupSessionAgent(sessionKey); sa != nil {
+		if r, ok := sa.(interface{ ResetModelFrom(Agent) }); ok {
+			r.ResetModelFrom(base)
+		}
+	}
+}
+
+// resetSessionAgentMode reverts the session agent's mode to base.
+func (e *Engine) resetSessionAgentMode(sessionKey string, base Agent) {
+	if sa := e.lookupSessionAgent(sessionKey); sa != nil {
+		if r, ok := sa.(interface{ ResetModeFrom(Agent) }); ok {
+			r.ResetModeFrom(base)
+		}
+	}
+}
+
+// resetSessionAgentReasoning reverts the session agent's reasoning effort to
+// the base agent's value.
+func (e *Engine) resetSessionAgentReasoning(sessionKey string, base Agent) {
+	if sa := e.lookupSessionAgent(sessionKey); sa != nil {
+		if r, ok := sa.(interface{ ResetReasoningFrom(Agent) }); ok {
+			r.ResetReasoningFrom(base)
+		}
+	}
+}
+
+// isModelResetTarget reports whether a /model argument means "restore the
+// project default model" for this session.
+func isModelResetTarget(input string) bool {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "default", "reset", "clear", "默认":
+		return true
+	}
+	return false
+}
+
 // When agentOverride is non-nil it is used instead of e.agent to start the session.
 // ccSessionKey, when non-empty, is used for CC_SESSION_KEY env injection; otherwise sessionKey is used.
 func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, replyCtx any, session *Session, sessions *SessionManager, agentOverride Agent, ccSessionKey string) *interactiveState {
@@ -4106,6 +4184,18 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	agent := e.agent
 	if agentOverride != nil {
 		agent = agentOverride
+	}
+	// A per-session agent instance (created by /model, /mode or /reasoning)
+	// takes precedence so the conversation's own cc-connect-level config is
+	// used. Its working directory follows the conversation's bound directory
+	// so the codex layer still sees the /dir target.
+	if sa := e.lookupSessionAgent(sessionKey); sa != nil {
+		agent = sa
+		if ws := workspaceFromInteractiveKey(sessionKey, ccSessionKey); ws != "" {
+			if wd, ok := sa.(interface{ SetWorkDir(string) }); ok {
+				wd.SetWorkDir(ws)
+			}
+		}
 	}
 
 	ccKey := sessionKey
@@ -6810,11 +6900,10 @@ func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string)
 }
 
 func (e *Engine) cmdNew(p Platform, msg *Message, args []string) {
-	_, sessions, interactiveKey, err := e.commandContext(p, msg)
-	if err != nil {
-		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
-		return
-	}
+	// Resolve the conversation's own workspace session store so /new resets
+	// the session on the forced workspace (/dir), not the default one.
+	interactiveKey := e.interactiveKeyForSessionKey(msg.SessionKey)
+	_, sessions := e.sessionContextForKey(msg.SessionKey)
 
 	slog.Info("cmdNew: cleaning up old session", "session_key", msg.SessionKey)
 	e.cleanupInteractiveState(interactiveKey)
@@ -9562,17 +9651,19 @@ func sanitizeTelegramMenuCommand(cmd string) string {
 }
 
 func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
-	agent, sessions, interactiveKey, err := e.commandContext(p, msg)
+	base, sessions, _, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
 	}
 
-	switcher, ok := agent.(ModelSwitcher)
+	switcher, ok := base.(ModelSwitcher)
 	if !ok {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgModelNotSupported))
 		return
 	}
+	interactiveKey := e.interactiveKeyForSessionKey(msg.SessionKey)
+	readAgent := e.sessionAgentForRead(interactiveKey, base)
 
 	if len(args) == 0 {
 		if !supportsCards(p) {
@@ -9581,7 +9672,10 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 			models := switcher.AvailableModels(fetchCtx)
 
 			var sb strings.Builder
-			current := switcher.GetModel()
+			var current string
+			if ma, ok := readAgent.(interface{ GetModel() string }); ok {
+				current = strings.TrimSpace(ma.GetModel())
+			}
 			if current == "" {
 				sb.WriteString(e.i18n.T(MsgModelDefault))
 			} else {
@@ -9641,6 +9735,17 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 	}
 
 	target := strings.TrimSpace(targetInput)
+	if isModelResetTarget(target) {
+		e.resetSessionAgentModel(interactiveKey, base)
+		e.cleanupInteractiveState(interactiveKey)
+		sessions.Save()
+		var defaultModel string
+		if ma, ok := base.(interface{ GetModel() string }); ok {
+			defaultModel = strings.TrimSpace(ma.GetModel())
+		}
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModelReset, defaultModel))
+		return
+	}
 	if modelSwitchNeedsLookup(target) {
 		fetchCtx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
 		defer cancel()
@@ -9648,12 +9753,12 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 		target = resolveModelSwitchTarget(target, models)
 	}
 
-	target, err = e.switchModelOnAgent(agent, target, agent == e.agent)
+	sessionAgent := e.sessionAgentFor(interactiveKey, base)
+	target, err = e.switchModelOnAgent(sessionAgent, target, false)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModelChangeFailed, err))
 		return
 	}
-	e.persistWorkspaceModelOverride(interactiveKey, msg.SessionKey, agent, target)
 	e.cleanupInteractiveState(interactiveKey)
 
 	// Keep the existing agent session ID so the next StartSession uses
@@ -9661,7 +9766,11 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 	// natively without replaying history (no extra token cost).
 	sessions.Save()
 
-	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModelChanged, target))
+	var defaultModel string
+	if ma, ok := base.(interface{ GetModel() string }); ok {
+		defaultModel = strings.TrimSpace(ma.GetModel())
+	}
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModelChangedSession, target, defaultModel))
 }
 
 // resolveModelAlias resolves a user-supplied string to a model name.
@@ -9777,24 +9886,29 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 }
 
 func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
-	agent, sessions, _, err := e.commandContext(p, msg)
+	base, sessions, _, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
 	}
 
-	switcher, ok := agent.(ReasoningEffortSwitcher)
+	switcher, ok := base.(ReasoningEffortSwitcher)
 	if !ok {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReasoningNotSupported))
 		return
 	}
+	interactiveKey := e.interactiveKeyForSessionKey(msg.SessionKey)
+	readAgent := e.sessionAgentForRead(interactiveKey, base)
 
 	if len(args) == 0 {
 		if !supportsCards(p) {
 			efforts := switcher.AvailableReasoningEfforts()
 
 			var sb strings.Builder
-			current := switcher.GetReasoningEffort()
+			var current string
+			if ra, ok := readAgent.(ReasoningEffortSwitcher); ok {
+				current = strings.TrimSpace(ra.GetReasoningEffort())
+			}
 			if current == "" {
 				sb.WriteString(e.i18n.T(MsgReasoningDefault))
 			} else {
@@ -9830,12 +9944,26 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 			e.replyWithButtons(p, msg.ReplyCtx, sb.String(), buttons)
 			return
 		}
-		e.replyWithCard(p, msg.ReplyCtx, e.renderReasoningCard())
+		e.replyWithCard(p, msg.ReplyCtx, e.renderReasoningCard(msg.SessionKey))
 		return
 	}
 
 	efforts := switcher.AvailableReasoningEfforts()
 	target := strings.ToLower(strings.TrimSpace(args[0]))
+	if isModelResetTarget(target) {
+		e.resetSessionAgentReasoning(interactiveKey, base)
+		e.cleanupInteractiveState(interactiveKey)
+		s := sessions.GetOrCreateActive(msg.SessionKey)
+		s.SetAgentSessionID("", "")
+		s.ClearHistory()
+		sessions.Save()
+		var defaultEffort string
+		if ra, ok := base.(ReasoningEffortSwitcher); ok {
+			defaultEffort = strings.TrimSpace(ra.GetReasoningEffort())
+		}
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReasoningReset, defaultEffort))
+		return
+	}
 	if idx, err := strconv.Atoi(target); err == nil && idx >= 1 && idx <= len(efforts) {
 		target = efforts[idx-1]
 	}
@@ -9852,33 +9980,44 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 		return
 	}
 
-	switcher.SetReasoningEffort(target)
-	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
+	sessionAgent := e.sessionAgentFor(interactiveKey, base)
+	rs, ok := sessionAgent.(ReasoningEffortSwitcher)
+	if !ok {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReasoningNotSupported))
+		return
+	}
+	rs.SetReasoningEffort(target)
+	e.cleanupInteractiveState(interactiveKey)
 
 	s := sessions.GetOrCreateActive(msg.SessionKey)
 	s.SetAgentSessionID("", "")
 	s.ClearHistory()
 	sessions.Save()
 
-	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReasoningChanged, target))
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReasoningChangedSession, target))
 }
 
 func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
-	agent, _, _, err := e.commandContext(p, msg)
+	base, _, _, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
 	}
 
-	switcher, ok := agent.(ModeSwitcher)
+	switcher, ok := base.(ModeSwitcher)
 	if !ok {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgModeNotSupported))
 		return
 	}
+	interactiveKey := e.interactiveKeyForSessionKey(msg.SessionKey)
+	readAgent := e.sessionAgentForRead(interactiveKey, base)
 
 	if len(args) == 0 {
 		if !supportsCards(p) {
-			current := switcher.GetMode()
+			var current string
+			if ma, ok := readAgent.(interface{ GetMode() string }); ok {
+				current = strings.TrimSpace(ma.GetMode())
+			}
 			modes := switcher.PermissionModes()
 			var sb strings.Builder
 			zhLike := e.i18n.IsZhLike()
@@ -9918,20 +10057,36 @@ func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
 			e.replyWithButtons(p, msg.ReplyCtx, sb.String(), buttons)
 			return
 		}
-		e.replyWithCard(p, msg.ReplyCtx, e.renderModeCard())
+		e.replyWithCard(p, msg.ReplyCtx, e.renderModeCard(msg.SessionKey))
 		return
 	}
 
-	target := strings.ToLower(args[0])
-	switcher.SetMode(target)
-	newMode := switcher.GetMode()
+	target := strings.ToLower(strings.TrimSpace(args[0]))
+	if isModelResetTarget(target) {
+		e.resetSessionAgentMode(interactiveKey, base)
+		e.cleanupInteractiveState(interactiveKey)
+		var defaultMode string
+		if ma, ok := base.(interface{ GetMode() string }); ok {
+			defaultMode = strings.TrimSpace(ma.GetMode())
+		}
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModeReset, defaultMode))
+		return
+	}
+	sessionAgent := e.sessionAgentFor(interactiveKey, base)
+	sw, ok := sessionAgent.(ModeSwitcher)
+	if !ok {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgModeNotSupported))
+		return
+	}
+	sw.SetMode(target)
+	newMode := sw.GetMode()
 	appliedLive := e.applyLiveModeChange(msg.SessionKey, newMode)
 
 	if !appliedLive {
-		e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
+		e.cleanupInteractiveState(interactiveKey)
 	}
 
-	modes := switcher.PermissionModes()
+	modes := sw.PermissionModes()
 	displayName := newMode
 	zhLike := e.i18n.IsZhLike()
 	for _, m := range modes {
@@ -9944,7 +10099,7 @@ func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
 			break
 		}
 	}
-	reply := fmt.Sprintf(e.i18n.T(MsgModeChanged), displayName)
+	reply := fmt.Sprintf(e.i18n.T(MsgModeChangedSession), displayName)
 	if appliedLive {
 		reply += "\n\n(Current session updated immediately.)"
 	}
@@ -11948,9 +12103,9 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	case "/model":
 		return e.renderModelCard(sessionKey)
 	case "/reasoning":
-		return e.renderReasoningCard()
+		return e.renderReasoningCard(sessionKey)
 	case "/mode":
-		return e.renderModeCard()
+		return e.renderModeCard(sessionKey)
 	case "/lang":
 		return e.renderLangCard()
 	case "/status":
@@ -12039,15 +12194,17 @@ func (e *Engine) handleModelCardAction(args, sessionKey string) *Card {
 		cancel()
 	}
 
-	resolved, err := e.switchModelOnAgent(agent, target, agent == e.agent)
 	interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
-	if err == nil {
-		e.persistWorkspaceModelOverride(interactiveKey, sessionKey, agent, resolved)
-	}
-	e.cleanupInteractiveState(interactiveKey)
-	if err == nil {
+	if isModelResetTarget(target) {
+		e.resetSessionAgentModel(interactiveKey, e.agent)
+		e.cleanupInteractiveState(interactiveKey)
 		sessions.Save()
+		return e.renderModelCard(sessionKey)
 	}
+	sessionAgent := e.sessionAgentFor(interactiveKey, e.agent)
+	resolved, err := e.switchModelOnAgent(sessionAgent, target, false)
+	e.cleanupInteractiveState(interactiveKey)
+	sessions.Save()
 
 	return e.renderModelSwitchResultCard(resolved, err)
 }
@@ -12137,12 +12294,26 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		}
 		efforts := switcher.AvailableReasoningEfforts()
 		target := strings.ToLower(strings.TrimSpace(args))
+		if isModelResetTarget(target) {
+			e.resetSessionAgentReasoning(interactiveKey, e.agent)
+			e.cleanupInteractiveState(interactiveKey)
+			s := e.sessions.GetOrCreateActive(sessionKey)
+			s.SetAgentSessionID("", "")
+			s.ClearHistory()
+			e.sessions.Save()
+			return
+		}
 		if idx, err := strconv.Atoi(target); err == nil && idx >= 1 && idx <= len(efforts) {
 			target = efforts[idx-1]
 		}
 		for _, effort := range efforts {
 			if effort == target {
-				switcher.SetReasoningEffort(target)
+				sessionAgent := e.sessionAgentFor(interactiveKey, e.agent)
+				rs, ok := sessionAgent.(ReasoningEffortSwitcher)
+				if !ok {
+					return
+				}
+				rs.SetReasoningEffort(target)
 				e.cleanupInteractiveState(interactiveKey)
 				s := e.sessions.GetOrCreateActive(sessionKey)
 				s.SetAgentSessionID("", "")
@@ -12156,13 +12327,26 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if args == "" {
 			return
 		}
-		switcher, ok := e.agent.(ModeSwitcher)
+		if _, ok := e.agent.(ModeSwitcher); !ok {
+			return
+		}
+		newMode := strings.ToLower(strings.TrimSpace(args))
+		if isModelResetTarget(newMode) {
+			e.resetSessionAgentMode(interactiveKey, e.agent)
+			e.cleanupInteractiveState(interactiveKey)
+			s := e.sessions.GetOrCreateActive(sessionKey)
+			s.SetAgentSessionID("", "")
+			s.ClearHistory()
+			e.sessions.Save()
+			return
+		}
+		sessionAgent := e.sessionAgentFor(interactiveKey, e.agent)
+		sw, ok := sessionAgent.(ModeSwitcher)
 		if !ok {
 			return
 		}
-		newMode := strings.ToLower(args)
-		switcher.SetMode(newMode)
-		if e.applyLiveModeChange(sessionKey, switcher.GetMode()) {
+		sw.SetMode(newMode)
+		if e.applyLiveModeChange(sessionKey, sw.GetMode()) {
 			e.cleanupInteractiveState(interactiveKey)
 			return
 		}
@@ -12651,29 +12835,26 @@ func (e *Engine) pushDeleteModeResultCard(sessionKey string) {
 }
 
 func (e *Engine) performModelSwitchAsync(sessionKey string, state *interactiveState, agent Agent, sessions *SessionManager, target string) {
-	resolved, err := e.switchModelOnAgent(agent, target, agent == e.agent)
-	if err == nil {
-		interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
-		e.persistWorkspaceModelOverride(interactiveKey, sessionKey, agent, resolved)
-		sessions.Save()
+	interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
+	sessionAgent := e.sessionAgentFor(interactiveKey, e.agent)
+	resolved, err := e.switchModelOnAgent(sessionAgent, target, false)
+	if err != nil {
+		resolved = target
 	}
+	sessions.Save()
 
-	resultCard := e.renderModelSwitchResultCard(resolved, err)
+	resultCard := e.renderModelSwitchResultCard(resolved, nil)
 	if state != nil {
 		state.mu.Lock()
 		if state.modelSwitch != nil {
 			state.modelSwitch.phase = "result"
 			state.modelSwitch.target = resolved
-			if err != nil {
-				state.modelSwitch.result = e.i18n.Tf(MsgModelCardSwitchFailed, err)
-			} else {
-				state.modelSwitch.result = e.i18n.Tf(MsgModelCardSwitched, resolved)
-			}
+			state.modelSwitch.result = e.i18n.Tf(MsgModelCardSwitched, resolved)
 		}
 		state.mu.Unlock()
 	}
 	e.pushModelSwitchResultCard(sessionKey, resultCard)
-	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(sessionKey), state)
+	e.cleanupInteractiveState(interactiveKey, state)
 }
 
 func (e *Engine) pushModelSwitchResultCard(sessionKey string, card *Card) {
@@ -12894,7 +13075,11 @@ func (e *Engine) renderModelCard(sessionKey string) *Card {
 	fetchCtx, cancel := context.WithTimeout(e.ctx, 3*time.Second)
 	defer cancel()
 	models := switcher.AvailableModels(fetchCtx)
-	current := switcher.GetModel()
+	readAgent := e.sessionAgentForRead(e.interactiveKeyForSessionKey(sessionKey), agent)
+	var current string
+	if ma, ok := readAgent.(interface{ GetModel() string }); ok {
+		current = strings.TrimSpace(ma.GetModel())
+	}
 
 	var sb strings.Builder
 	if current == "" {
@@ -12949,14 +13134,18 @@ func (e *Engine) renderModelSwitchResultCard(target string, err error) *Card {
 		Build()
 }
 
-func (e *Engine) renderReasoningCard() *Card {
+func (e *Engine) renderReasoningCard(sessionKey string) *Card {
 	switcher, ok := e.agent.(ReasoningEffortSwitcher)
 	if !ok {
 		return e.simpleCard(e.i18n.T(MsgCardTitleReasoning), "orange", e.i18n.T(MsgReasoningNotSupported))
 	}
+	readAgent := e.sessionAgentForRead(e.interactiveKeyForSessionKey(sessionKey), e.agent)
 
 	efforts := switcher.AvailableReasoningEfforts()
-	current := switcher.GetReasoningEffort()
+	var current string
+	if ra, ok := readAgent.(ReasoningEffortSwitcher); ok {
+		current = strings.TrimSpace(ra.GetReasoningEffort())
+	}
 
 	var sb strings.Builder
 	if current == "" {
@@ -12983,13 +13172,17 @@ func (e *Engine) renderReasoningCard() *Card {
 	return cb.Build()
 }
 
-func (e *Engine) renderModeCard() *Card {
+func (e *Engine) renderModeCard(sessionKey string) *Card {
 	switcher, ok := e.agent.(ModeSwitcher)
 	if !ok {
 		return e.simpleCard(e.i18n.T(MsgCardTitleMode), "violet", e.i18n.T(MsgModeNotSupported))
 	}
+	readAgent := e.sessionAgentForRead(e.interactiveKeyForSessionKey(sessionKey), e.agent)
 
-	current := switcher.GetMode()
+	var current string
+	if ma, ok := readAgent.(interface{ GetMode() string }); ok {
+		current = strings.TrimSpace(ma.GetMode())
+	}
 	modes := switcher.PermissionModes()
 	zhLike := e.i18n.IsZhLike()
 

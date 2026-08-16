@@ -534,6 +534,62 @@ func (a *stubModelModeAgent) PermissionModes() []PermissionModeInfo {
 	}
 }
 
+func (a *stubModelModeAgent) CloneSession() Agent {
+	clone := *a
+	clone.providers = append([]ProviderConfig(nil), a.providers...)
+	return &clone
+}
+
+func (a *stubModelModeAgent) ResetModelFrom(src Agent) {
+	if b, ok := src.(*stubModelModeAgent); ok {
+		a.model = b.model
+		a.providers = append([]ProviderConfig(nil), b.providers...)
+		a.active = b.active
+	}
+}
+
+func (a *stubModelModeAgent) ResetModeFrom(src Agent) {
+	if b, ok := src.(*stubModelModeAgent); ok {
+		a.mode = b.mode
+	}
+}
+
+func (a *stubModelModeAgent) ResetReasoningFrom(src Agent) {
+	if b, ok := src.(*stubModelModeAgent); ok {
+		a.reasoningEffort = b.reasoningEffort
+	}
+}
+
+// sessionAgentOf returns the per-session stub agent created for key, or nil.
+func sessionAgentOf(e *Engine, key string) *stubModelModeAgent {
+	if a := e.lookupSessionAgent(key); a != nil {
+		sa, _ := a.(*stubModelModeAgent)
+		return sa
+	}
+	return nil
+}
+
+func sessionAgentModelOf(e *Engine, key string) string {
+	if sa := sessionAgentOf(e, key); sa != nil {
+		return sa.model
+	}
+	return ""
+}
+
+func sessionAgentModeOf(e *Engine, key string) string {
+	if sa := sessionAgentOf(e, key); sa != nil {
+		return sa.mode
+	}
+	return ""
+}
+
+func sessionAgentReasoningOf(e *Engine, key string) string {
+	if sa := sessionAgentOf(e, key); sa != nil {
+		return sa.reasoningEffort
+	}
+	return ""
+}
+
 func (a *stubModelModeAgent) SetReasoningEffort(effort string) {
 	a.reasoningEffort = effort
 }
@@ -4373,7 +4429,7 @@ func TestCmdModel_UsesInlineButtonsOnButtonOnlyPlatform(t *testing.T) {
 	}
 }
 
-func TestCmdModel_UpdatesActiveProviderModel(t *testing.T) {
+func TestCmdModel_SwitchesModelPerSession(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	agent := &stubModelModeAgent{
 		model: "gpt-4.1-mini",
@@ -4400,17 +4456,20 @@ func TestCmdModel_UpdatesActiveProviderModel(t *testing.T) {
 
 	e.cmdModel(p, msg, []string{"switch", "gpt"})
 
-	if agent.model != "gpt-4.1" {
-		t.Fatalf("agent model = %q, want gpt-4.1", agent.model)
+	if agent.model != "gpt-4.1-mini" {
+		t.Fatalf("agent model = %q, want unchanged project default gpt-4.1-mini", agent.model)
 	}
-	if got := agent.GetActiveProvider(); got == nil || got.Model != "gpt-4.1" {
-		t.Fatalf("active provider model = %#v, want gpt-4.1", got)
+	if got := agent.GetActiveProvider(); got == nil || got.Model != "gpt-4.1-mini" {
+		t.Fatalf("active provider model = %#v, want unchanged gpt-4.1-mini", got)
 	}
-	if got := agent.GetModel(); got != "gpt-4.1" {
-		t.Fatalf("GetModel() = %q, want gpt-4.1", got)
+	if got := agent.GetModel(); got != "gpt-4.1-mini" {
+		t.Fatalf("GetModel() = %q, want unchanged gpt-4.1-mini", got)
 	}
-	if savedProvider != "openai" || savedModel != "gpt-4.1" {
-		t.Fatalf("saved provider/model = %q/%q, want openai/gpt-4.1", savedProvider, savedModel)
+	if savedProvider != "" || savedModel != "" {
+		t.Fatalf("provider model save called with %q/%q, want no persistence for session switch", savedProvider, savedModel)
+	}
+	if got := sessionAgentModelOf(e, "test:user1"); got != "gpt-4.1" {
+		t.Fatalf("session model override = %q, want gpt-4.1", got)
 	}
 	if active := e.sessions.GetOrCreateActive(msg.SessionKey); active.AgentSessionID != "existing-session" {
 		t.Fatalf("session id = %q, want preserved after model switch", active.AgentSessionID)
@@ -4425,8 +4484,11 @@ func TestCmdModel_DirectNameDoesNotNeedModelListMatch(t *testing.T) {
 
 	e.cmdModel(p, msg, []string{"switch", "custom/provider-model"})
 
-	if agent.model != "custom/provider-model" {
-		t.Fatalf("agent model = %q, want custom/provider-model", agent.model)
+	if agent.model != "" {
+		t.Fatalf("agent model = %q, want unchanged project default", agent.model)
+	}
+	if got := sessionAgentModelOf(e, "test:user1"); got != "custom/provider-model" {
+		t.Fatalf("session model override = %q, want custom/provider-model", got)
 	}
 	if agent.calls != 0 {
 		t.Fatalf("AvailableModels calls = %d, want 0 for direct name switch", agent.calls)
@@ -4441,8 +4503,11 @@ func TestCmdModel_AliasWithPunctuationStillResolves(t *testing.T) {
 
 	e.cmdModel(p, msg, []string{"switch", "gpt-4.1"})
 
-	if agent.model != "openai/gpt-4.1" {
-		t.Fatalf("agent model = %q, want openai/gpt-4.1", agent.model)
+	if agent.model != "" {
+		t.Fatalf("agent model = %q, want unchanged project default", agent.model)
+	}
+	if got := sessionAgentModelOf(e, "test:user1"); got != "openai/gpt-4.1" {
+		t.Fatalf("session model override = %q, want openai/gpt-4.1", got)
 	}
 	if agent.calls != 1 {
 		t.Fatalf("AvailableModels calls = %d, want 1 for punctuated alias lookup", agent.calls)
@@ -4457,8 +4522,11 @@ func TestCmdModel_AliasStillResolvesOnColdStart(t *testing.T) {
 
 	e.cmdModel(p, msg, []string{"switch", "gpt"})
 
-	if agent.model != "gpt-4.1" {
-		t.Fatalf("agent model = %q, want gpt-4.1", agent.model)
+	if agent.model != "" {
+		t.Fatalf("agent model = %q, want unchanged project default", agent.model)
+	}
+	if got := sessionAgentModelOf(e, "test:user1"); got != "gpt-4.1" {
+		t.Fatalf("session model override = %q, want gpt-4.1", got)
 	}
 }
 
@@ -4470,12 +4538,15 @@ func TestCmdModel_LegacySyntaxStillWorks(t *testing.T) {
 
 	e.cmdModel(p, msg, []string{"gpt"})
 
-	if agent.model != "gpt-4.1" {
-		t.Fatalf("agent model = %q, want gpt-4.1", agent.model)
+	if agent.model != "" {
+		t.Fatalf("agent model = %q, want unchanged project default", agent.model)
+	}
+	if got := sessionAgentModelOf(e, "test:user1"); got != "gpt-4.1" {
+		t.Fatalf("session model override = %q, want gpt-4.1", got)
 	}
 }
 
-func TestCmdModel_SavesModelWhenNoActiveProvider(t *testing.T) {
+func TestCmdModel_NoActiveProviderSwitchesPerSessionWithoutSave(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	agent := &stubModelModeAgent{
 		model: "gpt-4.1-mini",
@@ -4498,15 +4569,18 @@ func TestCmdModel_SavesModelWhenNoActiveProvider(t *testing.T) {
 	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
 	e.cmdModel(p, msg, []string{"switch", "gpt"})
 
-	if agent.model != "gpt-4.1" {
-		t.Fatalf("agent model = %q, want gpt-4.1", agent.model)
+	if agent.model != "gpt-4.1-mini" {
+		t.Fatalf("agent model = %q, want unchanged gpt-4.1-mini", agent.model)
 	}
-	if savedModel != "gpt-4.1" {
-		t.Fatalf("saved model = %q, want gpt-4.1", savedModel)
+	if savedModel != "" {
+		t.Fatalf("model save called with %q, want no persistence for session switch", savedModel)
+	}
+	if got := sessionAgentModelOf(e, "test:user1"); got != "gpt-4.1" {
+		t.Fatalf("session model override = %q, want gpt-4.1", got)
 	}
 }
 
-func TestCmdModel_DoesNotClaimSuccessWhenModelSaveFails(t *testing.T) {
+func TestCmdModel_DefaultRestoresProjectModel(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	agent := &stubModelModeAgent{
 		model: "gpt-4.1-mini",
@@ -4519,9 +4593,6 @@ func TestCmdModel_DoesNotClaimSuccessWhenModelSaveFails(t *testing.T) {
 		},
 	}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
-	e.SetModelSaveFunc(func(model string) error {
-		return errors.New("disk full")
-	})
 
 	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
 	s := e.sessions.GetOrCreateActive(msg.SessionKey)
@@ -4529,22 +4600,30 @@ func TestCmdModel_DoesNotClaimSuccessWhenModelSaveFails(t *testing.T) {
 	s.AddHistory("user", "keep me")
 
 	e.cmdModel(p, msg, []string{"switch", "gpt"})
+	if got := sessionAgentModelOf(e, "test:user1"); got != "gpt-4.1" {
+		t.Fatalf("session model override after switch = %q, want gpt-4.1", got)
+	}
 
+	e.cmdModel(p, msg, []string{"default"})
+
+	if got := sessionAgentModelOf(e, "test:user1"); got != "gpt-4.1-mini" {
+		t.Fatalf("session agent model after default = %q, want restored project default gpt-4.1-mini", got)
+	}
 	if agent.model != "gpt-4.1-mini" {
-		t.Fatalf("agent model = %q, want unchanged gpt-4.1-mini", agent.model)
+		t.Fatalf("agent model = %q, want unchanged project default gpt-4.1-mini", agent.model)
 	}
 	if active := e.sessions.GetOrCreateActive(msg.SessionKey); active.AgentSessionID != "existing-session" {
-		t.Fatalf("session id = %q, want existing-session after failure", active.AgentSessionID)
+		t.Fatalf("session id = %q, want existing-session after reset", active.AgentSessionID)
 	}
 	if active := e.sessions.GetOrCreateActive(msg.SessionKey); len(active.History) != 1 {
-		t.Fatalf("history length = %d, want 1 after failure", len(active.History))
+		t.Fatalf("history length = %d, want 1", len(active.History))
 	}
 	sent := p.getSent()
-	if len(sent) != 1 {
-		t.Fatalf("sent messages = %d, want 1", len(sent))
+	if len(sent) == 0 {
+		t.Fatalf("expected a reply after /model default")
 	}
-	if !strings.Contains(sent[0], "Failed to change model") {
-		t.Fatalf("reply = %q, want model change failure message", sent[0])
+	if !strings.Contains(sent[len(sent)-1], "gpt-4.1-mini") {
+		t.Fatalf("reply = %q, want reset message mentioning project default gpt-4.1-mini", sent[len(sent)-1])
 	}
 }
 
@@ -4575,11 +4654,14 @@ func TestCmdModel_MultiWorkspaceUsesWorkspaceAgentAndSessions(t *testing.T) {
 
 	e.cmdModel(p, msg, []string{"switch", "gpt"})
 
-	if wsAgent.model != "gpt-4.1" {
-		t.Fatalf("workspace agent model = %q, want gpt-4.1", wsAgent.model)
+	if wsAgent.model != "gpt-4.1-mini" {
+		t.Fatalf("workspace agent model = %q, want unchanged project default", wsAgent.model)
 	}
 	if globalAgent.model != "gpt-4.1-mini" {
 		t.Fatalf("global agent model = %q, want unchanged", globalAgent.model)
+	}
+	if got := sessionAgentModelOf(e, wsDir+":"+msg.SessionKey); got != "gpt-4.1" {
+		t.Fatalf("session model override = %q, want gpt-4.1", got)
 	}
 	if got := ws.sessions.GetOrCreateActive(msg.SessionKey).AgentSessionID; got != "workspace-session" {
 		t.Fatalf("workspace session id = %q, want preserved", got)
@@ -4619,15 +4701,18 @@ func TestCmdModel_MultiWorkspaceSwitchDoesNotMutateProviderModel(t *testing.T) {
 
 	e.cmdModel(p, msg, []string{"switch", "gpt"})
 
-	if wsAgent.model != "gpt-4.1" {
-		t.Fatalf("workspace agent model = %q, want gpt-4.1", wsAgent.model)
+	if wsAgent.model != "gpt-4.1-mini" {
+		t.Fatalf("workspace agent model = %q, want unchanged project default", wsAgent.model)
 	}
 	if got := wsAgent.GetActiveProvider(); got == nil || got.Model != "gpt-4.1-mini" {
 		t.Fatalf("workspace active provider = %#v, want unchanged model gpt-4.1-mini", got)
 	}
+	if got := sessionAgentModelOf(e, wsDir+":"+msg.SessionKey); got != "gpt-4.1" {
+		t.Fatalf("session model override = %q, want gpt-4.1", got)
+	}
 }
 
-func TestCmdModel_MultiWorkspacePersistsWorkspaceModelForRecreatedAgent(t *testing.T) {
+func TestCmdModel_MultiWorkspaceDoesNotPersistModelOverride(t *testing.T) {
 	agentName := "test-workspace-model-override"
 	RegisterAgent(agentName, func(opts map[string]any) (Agent, error) {
 		agent := &namedStubModelModeAgent{name: agentName}
@@ -4671,26 +4756,11 @@ func TestCmdModel_MultiWorkspacePersistsWorkspaceModelForRecreatedAgent(t *testi
 	if globalAgent.model != "global-old" {
 		t.Fatalf("global agent model = %q, want unchanged", globalAgent.model)
 	}
-	if got := e.projectState.WorkspaceModelOverride(wsDir); got != "gpt-4.1" {
-		t.Fatalf("WorkspaceModelOverride(%q) = %q, want gpt-4.1", wsDir, got)
+	if got := e.projectState.WorkspaceModelOverride(wsDir); got != "" {
+		t.Fatalf("WorkspaceModelOverride(%q) = %q, want no persistence", wsDir, got)
 	}
-
-	ws := e.workspacePool.GetOrCreate(wsDir)
-	ws.mu.Lock()
-	ws.agent = nil
-	ws.sessions = nil
-	ws.mu.Unlock()
-
-	recreatedRaw, _, err := e.getOrCreateWorkspaceAgent(wsDir)
-	if err != nil {
-		t.Fatalf("getOrCreateWorkspaceAgent returned error: %v", err)
-	}
-	recreated, ok := recreatedRaw.(*namedStubModelModeAgent)
-	if !ok {
-		t.Fatalf("workspace agent type = %T, want *namedStubModelModeAgent", recreatedRaw)
-	}
-	if recreated.model != "gpt-4.1" {
-		t.Fatalf("recreated workspace model = %q, want persisted workspace model gpt-4.1", recreated.model)
+	if got := sessionAgentModelOf(e, wsDir+":"+msg.SessionKey); got != "gpt-4.1" {
+		t.Fatalf("session model override = %q, want gpt-4.1", got)
 	}
 }
 
@@ -4720,6 +4790,42 @@ func TestCmdModel_KeepHistoryPreservesSessionID(t *testing.T) {
 	}
 	if got := len(s.GetHistory(0)); got != 1 {
 		t.Fatalf("history len = %d, want 1 (original entry preserved)", got)
+	}
+	if got := sessionAgentModelOf(e, "test:user1"); got != "gpt-4.1" {
+		t.Fatalf("session model override = %q, want gpt-4.1", got)
+	}
+}
+
+func TestCmdModel_SessionScopedIsolationAcrossNew(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &stubModelModeAgent{model: "gpt-4.1-mini"}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	msgA := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+
+	e.cmdModel(p, msgA, []string{"switch", "gpt"})
+
+	if got := sessionAgentModelOf(e, "test:user1"); got != "gpt-4.1" {
+		t.Fatalf("session A override = %q, want gpt-4.1", got)
+	}
+	if got := sessionAgentModelOf(e, "test:user2"); got != "" {
+		t.Fatalf("session B override = %q, want untouched", got)
+	}
+	if agent.model != "gpt-4.1-mini" {
+		t.Fatalf("agent model = %q, want unchanged project default", agent.model)
+	}
+
+	// /new keeps the conversation's own override; only an explicit reset or a
+	// daemon restart drops it. Other conversations stay untouched.
+	e.cmdNew(p, msgA, nil)
+	if got := sessionAgentModelOf(e, "test:user1"); got != "gpt-4.1" {
+		t.Fatalf("session A override after /new = %q, want kept gpt-4.1", got)
+	}
+	if got := sessionAgentModelOf(e, "test:user2"); got != "" {
+		t.Fatalf("session B override = %q, want still untouched", got)
+	}
+	if agent.model != "gpt-4.1-mini" {
+		t.Fatalf("agent model = %q, want unchanged project default", agent.model)
 	}
 }
 
@@ -4960,6 +5066,73 @@ func TestCmdDir_SwitchesDirectoryAndResetsSession(t *testing.T) {
 	}
 	if len(p.sent) != 1 || !strings.Contains(p.sent[0], nextDir) {
 		t.Fatalf("sent = %v, want directory changed message", p.sent)
+	}
+}
+
+func TestCmdNewAfterPerSessionDirRoutesToWorkspaceSession(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agentName := "test-command-routing-dir"
+	RegisterAgent(agentName, func(opts map[string]any) (Agent, error) {
+		agent := &namedStubWorkDirAgent{name: agentName}
+		if workDir, ok := opts["work_dir"].(string); ok {
+			agent.workDir = workDir
+		}
+		return agent, nil
+	})
+
+	baseDir := t.TempDir()
+	nextDir := filepath.Join(baseDir, "next")
+	if err := os.Mkdir(nextDir, 0o755); err != nil {
+		t.Fatalf("mkdir next dir: %v", err)
+	}
+
+	globalAgent := &namedStubWorkDirAgent{name: agentName, stubWorkDirAgent: stubWorkDirAgent{workDir: baseDir}}
+	sessionStorePath := filepath.Join(t.TempDir(), "sessions.json")
+	e := NewEngine("test", globalAgent, []Platform{p}, sessionStorePath, LangEnglish)
+	e.SetBaseWorkDir(baseDir)
+	e.SetProjectStateStore(NewProjectStateStore(filepath.Join(t.TempDir(), "projects", "test.state.json")))
+	e.SetAdminFrom("admin1")
+
+	msg := &Message{SessionKey: "test:user1", UserID: "admin1", ReplyCtx: "ctx"}
+	if !e.handleCommand(p, msg, "/dir next") {
+		t.Fatal("expected /dir to be handled as a command")
+	}
+	if got := e.sendWorkDirForSession(msg.SessionKey); got != nextDir {
+		t.Fatalf("session work dir = %q, want %q", got, nextDir)
+	}
+
+	// Simulate an existing conversation in both the global and per-directory
+	// session managers, then verify /new only resets the latter.
+	globalSession := e.sessions.GetOrCreateActive(msg.SessionKey)
+	globalSession.SetAgentSessionID("global-old", "test")
+
+	_, workspaceSessions := e.sessionContextForKey(msg.SessionKey)
+	workspaceSession := workspaceSessions.GetOrCreateActive(msg.SessionKey)
+	workspaceSession.SetAgentSessionID("workspace-old", "test")
+	workspaceSession.AddHistory("user", "old workspace history")
+	workspaceSessions.Save()
+
+	p.clearSent()
+	if !e.handleCommand(p, msg, "/new") {
+		t.Fatal("expected /new to be handled as a command")
+	}
+
+	if got := globalSession.GetAgentSessionID(); got != "global-old" {
+		t.Fatalf("global session agent ID = %q, want unchanged global-old", got)
+	}
+	if got := workspaceSession.GetAgentSessionID(); got != "" {
+		t.Fatalf("workspace old session agent ID = %q, want cleared", got)
+	}
+	if got := len(workspaceSession.History); got != 0 {
+		t.Fatalf("workspace old session history length = %d, want 0", got)
+	}
+
+	newWorkspaceSession := workspaceSessions.GetOrCreateActive(msg.SessionKey)
+	if newWorkspaceSession.ID == workspaceSession.ID {
+		t.Fatalf("workspace active session still %q, want a new session after /new", workspaceSession.ID)
+	}
+	if len(newWorkspaceSession.History) != 0 {
+		t.Fatalf("new workspace session history length = %d, want 0", len(newWorkspaceSession.History))
 	}
 }
 
@@ -5335,8 +5508,11 @@ func TestCmdReasoning_SwitchesEffortAndResetsSession(t *testing.T) {
 
 	e.cmdReasoning(p, msg, []string{"3"})
 
-	if agent.reasoningEffort != "high" {
-		t.Fatalf("reasoning effort = %q, want high", agent.reasoningEffort)
+	if got := sessionAgentReasoningOf(e, "test:user1"); got != "high" {
+		t.Fatalf("session reasoning override = %q, want high", got)
+	}
+	if agent.reasoningEffort != "" {
+		t.Fatalf("agent reasoning effort = %q, want unchanged project default", agent.reasoningEffort)
 	}
 	if s.GetAgentSessionID() != "" {
 		t.Fatalf("AgentSessionID = %q, want cleared", s.GetAgentSessionID())
@@ -5397,8 +5573,11 @@ func TestCmdReasoning_MultiWorkspaceSavesToWorkspaceSessions(t *testing.T) {
 
 	e.cmdReasoning(p, msg, []string{"3"}) // selects "high"
 
-	if wsAgent.reasoningEffort != "high" {
-		t.Fatalf("workspace agent reasoning effort = %q, want high", wsAgent.reasoningEffort)
+	if got := sessionAgentReasoningOf(e, wsDir+":"+msg.SessionKey); got != "high" {
+		t.Fatalf("session reasoning override = %q, want high", got)
+	}
+	if wsAgent.reasoningEffort != "" {
+		t.Fatalf("workspace agent reasoning effort = %q, want unchanged project default", wsAgent.reasoningEffort)
 	}
 	if got := wsSession.GetAgentSessionID(); got != "" {
 		t.Fatalf("workspace session id = %q, want cleared", got)
@@ -5686,8 +5865,71 @@ func TestCmdMode_AppliesLiveModeWithoutReset(t *testing.T) {
 	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "Current session updated immediately.") {
 		t.Fatalf("sent = %v, want live mode update reply", p.sent)
 	}
-	if got := agent.GetMode(); got != "yolo" {
-		t.Fatalf("agent mode = %q, want yolo", got)
+	if got := sessionAgentModeOf(e, key); got != "yolo" {
+		t.Fatalf("session mode override = %q, want yolo", got)
+	}
+	if got := agent.GetMode(); got != "default" {
+		t.Fatalf("agent mode = %q, want unchanged project default", got)
+	}
+}
+
+func TestCmdMode_SessionScopedIsolationAndDefaultReset(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &stubModelModeAgent{}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	msgA := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+
+	e.cmdMode(p, msgA, []string{"yolo"})
+	if got := sessionAgentModeOf(e, "test:user1"); got != "yolo" {
+		t.Fatalf("session A mode override = %q, want yolo", got)
+	}
+	if got := sessionAgentModeOf(e, "test:user2"); got != "" {
+		t.Fatalf("session B mode override = %q, want untouched", got)
+	}
+	if got := agent.GetMode(); got != "default" {
+		t.Fatalf("agent mode = %q, want unchanged project default", got)
+	}
+
+	e.cmdMode(p, msgA, []string{"default"})
+	if got := sessionAgentModeOf(e, "test:user1"); got != "" {
+		t.Fatalf("session A mode override after default = %q, want cleared", got)
+	}
+	if got := agent.GetMode(); got != "default" {
+		t.Fatalf("agent mode = %q, want unchanged project default after reset", got)
+	}
+}
+
+func TestCmdModelMode_ShareOneSessionSnapshot(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &stubModelModeAgent{}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+
+	e.cmdModel(p, msg, []string{"switch", "gpt"})
+	e.cmdMode(p, msg, []string{"yolo"})
+	e.cmdReasoning(p, msg, []string{"3"})
+
+	if got := sessionAgentModelOf(e, "test:user1"); got != "gpt-4.1" {
+		t.Fatalf("session model override = %q, want gpt-4.1", got)
+	}
+	if got := sessionAgentModeOf(e, "test:user1"); got != "yolo" {
+		t.Fatalf("session mode override = %q, want yolo", got)
+	}
+	if got := sessionAgentReasoningOf(e, "test:user1"); got != "high" {
+		t.Fatalf("session reasoning override = %q, want high", got)
+	}
+
+	// Resetting one field keeps the others in the same snapshot.
+	e.cmdModel(p, msg, []string{"default"})
+	if got := sessionAgentModelOf(e, "test:user1"); got != "" {
+		t.Fatalf("session model override after default = %q, want cleared", got)
+	}
+	if got := sessionAgentModeOf(e, "test:user1"); got != "yolo" {
+		t.Fatalf("session mode override after model reset = %q, want kept yolo", got)
+	}
+	if got := sessionAgentReasoningOf(e, "test:user1"); got != "high" {
+		t.Fatalf("session reasoning override after model reset = %q, want kept high", got)
 	}
 }
 
@@ -8972,8 +9214,11 @@ func TestHandleCardNav_ModelSwitchesAndRefreshesCard(t *testing.T) {
 	if text := card.RenderText(); !strings.Contains(text, "Model switched to `new-model`.") {
 		t.Fatalf("result card = %q", text)
 	}
-	if agent.model != "new-model" {
-		t.Fatalf("model = %q, want new-model", agent.model)
+	if agent.model != "old" {
+		t.Fatalf("agent model = %q, want unchanged project default", agent.model)
+	}
+	if got := sessionAgentModelOf(e, sessionKey); got != "new-model" {
+		t.Fatalf("session model override = %q, want new-model", got)
 	}
 	if refreshed := p.getRefreshedCards(); len(refreshed) != 0 {
 		t.Fatalf("unexpected async refreshed cards: %d", len(refreshed))
@@ -9017,11 +9262,14 @@ func TestHandleCardNav_ModelUsesWorkspaceContext(t *testing.T) {
 		t.Fatalf("result card = %q, want switched workspace model", text)
 	}
 
-	if wsAgent.model != "gpt-4.1" {
-		t.Fatalf("workspace agent model = %q, want gpt-4.1", wsAgent.model)
+	if wsAgent.model != "workspace-old" {
+		t.Fatalf("workspace agent model = %q, want unchanged project default", wsAgent.model)
 	}
 	if globalAgent.model != "global-old" {
 		t.Fatalf("global agent model = %q, want unchanged", globalAgent.model)
+	}
+	if got := sessionAgentModelOf(e, wsDir+":"+sessionKey); got != "gpt-4.1" {
+		t.Fatalf("session model override = %q, want gpt-4.1", got)
 	}
 	if got := ws.sessions.GetOrCreateActive(sessionKey).AgentSessionID; got != "workspace-session" {
 		t.Fatalf("workspace session id = %q, want preserved", got)
@@ -9034,7 +9282,7 @@ func TestHandleCardNav_ModelUsesWorkspaceContext(t *testing.T) {
 	}
 }
 
-func TestHandleCardNav_ModelSwitchFailureRefreshesCard(t *testing.T) {
+func TestHandleCardNav_ModelSwitchNoLongerPersistsConfig(t *testing.T) {
 	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 	agent := &stubModelModeAgent{model: "old"}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
@@ -9043,10 +9291,16 @@ func TestHandleCardNav_ModelSwitchFailureRefreshesCard(t *testing.T) {
 	sessionKey := "feishu:channel1:user1"
 	card := e.handleCardNav("act:/model broken-model", sessionKey)
 	if card == nil {
-		t.Fatal("expected immediate failure card")
+		t.Fatal("expected immediate result card")
 	}
-	if text := card.RenderText(); !strings.Contains(text, "Failed to switch model: save model: save failed") {
-		t.Fatalf("failure card = %q", text)
+	if text := card.RenderText(); !strings.Contains(text, "Model switched to `broken-model`.") {
+		t.Fatalf("result card = %q", text)
+	}
+	if got := sessionAgentModelOf(e, sessionKey); got != "broken-model" {
+		t.Fatalf("session model override = %q, want broken-model", got)
+	}
+	if agent.model != "old" {
+		t.Fatalf("agent model = %q, want unchanged project default", agent.model)
 	}
 	if refreshed := p.getRefreshedCards(); len(refreshed) != 0 {
 		t.Fatalf("unexpected async refreshed cards: %d", len(refreshed))

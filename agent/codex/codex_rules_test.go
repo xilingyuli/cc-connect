@@ -41,6 +41,74 @@ func TestAgentResolveModeNoRules(t *testing.T) {
 	}
 }
 
+func TestAgentResolveModeRegexRule(t *testing.T) {
+	a := &Agent{
+		modeRules: map[string]string{
+			"(?:.*:)?qq:123456789": "yolo", // private chat under any /dir prefix
+			"qq:g:999":             "full-auto",
+		},
+	}
+
+	tests := []struct {
+		name       string
+		sessionKey string
+		want       string
+	}{
+		{name: "workspace-prefixed private", sessionKey: "/Users/me/Weather:qq:123456789", want: "yolo"},
+		{name: "plain private still matches", sessionKey: "qq:123456789", want: "yolo"},
+		{name: "private rule does not leak into group", sessionKey: "qq:123456789:999", want: ""},
+		{name: "plain group exact still matches", sessionKey: "qq:g:999", want: "full-auto"},
+		{name: "group rule stays exact across dirs", sessionKey: "/Users/me/Weather:qq:g:999", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := a.ResolveMode(&core.Message{SessionKey: tt.sessionKey}); got != tt.want {
+				t.Fatalf("ResolveMode(%q) = %q, want %q", tt.sessionKey, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAgentResolveModeLongestRegexWins(t *testing.T) {
+	a := &Agent{
+		modeRules: map[string]string{
+			"(?:.*:)?qq:123": "yolo",
+			"(?:.*:)?123":    "suggest",
+		},
+	}
+	if got := a.ResolveMode(&core.Message{SessionKey: "/dir:qq:123"}); got != "yolo" {
+		t.Fatalf("ResolveMode(/dir:qq:123) = %q, want yolo (longest regex wins)", got)
+	}
+}
+
+func TestAgentResolveModeGroupPrefixStillMatches(t *testing.T) {
+	a := &Agent{
+		modeRules: map[string]string{
+			"qq:123456789": "full-auto",
+		},
+	}
+	if got := a.ResolveMode(&core.Message{SessionKey: "qq:123456789:123456"}); got != "full-auto" {
+		t.Fatalf("ResolveMode(qq:123456789:123456) = %q, want full-auto (group prefix rule)", got)
+	}
+}
+
+func TestWorkspaceAgentOptionsIncludesModeRules(t *testing.T) {
+	a := &Agent{
+		modeRules: map[string]string{"qq:1": "yolo", "*": "suggest"},
+	}
+	opts := a.WorkspaceAgentOptions()
+	rules, ok := opts["mode_rules"].(map[string]string)
+	if !ok {
+		t.Fatalf("WorkspaceAgentOptions() mode_rules = %#v, want map[string]string", opts["mode_rules"])
+	}
+	if got := rules["qq:1"]; got != "yolo" {
+		t.Fatalf("mode_rules[qq:1] = %q, want yolo", got)
+	}
+	if got := rules["*"]; got != "suggest" {
+		t.Fatalf("mode_rules[*] = %q, want suggest", got)
+	}
+}
+
 func TestParseModeRules(t *testing.T) {
 	rules := parseModeRules(map[string]any{
 		"qq:123456789":   "full-auto",

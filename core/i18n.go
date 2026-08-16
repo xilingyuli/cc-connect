@@ -196,6 +196,8 @@ const (
 	MsgQuietGlobalOn             MsgKey = "quiet_global_on"
 	MsgQuietGlobalOff            MsgKey = "quiet_global_off"
 	MsgModeChanged               MsgKey = "mode_changed"
+	MsgModeChangedSession        MsgKey = "mode_changed_session"
+	MsgModeReset                 MsgKey = "mode_reset"
 	MsgModeNotSupported          MsgKey = "mode_not_supported"
 	MsgSessionRestarting         MsgKey = "session_restarting"
 	MsgSessionNotStarted         MsgKey = "session_not_started"
@@ -295,18 +297,22 @@ const (
 	MsgCronBtnUnmute          MsgKey = "cron_btn_unmute"
 	MsgCronBtnDelete          MsgKey = "cron_btn_delete"
 
-	MsgStatusTitle           MsgKey = "status_title"
-	MsgReplyFooterRemaining  MsgKey = "reply_footer_remaining"
-	MsgModelCurrent          MsgKey = "model_current"
-	MsgModelChanged          MsgKey = "model_changed"
-	MsgModelChangeFailed     MsgKey = "model_change_failed"
-	MsgModelCardSwitching    MsgKey = "model_card_switching"
-	MsgModelCardSwitched     MsgKey = "model_card_switched"
-	MsgModelCardSwitchFailed MsgKey = "model_card_switch_failed"
-	MsgModelNotSupported     MsgKey = "model_not_supported"
-	MsgReasoningCurrent      MsgKey = "reasoning_current"
-	MsgReasoningChanged      MsgKey = "reasoning_changed"
-	MsgReasoningNotSupported MsgKey = "reasoning_not_supported"
+	MsgStatusTitle             MsgKey = "status_title"
+	MsgReplyFooterRemaining    MsgKey = "reply_footer_remaining"
+	MsgModelCurrent            MsgKey = "model_current"
+	MsgModelChanged            MsgKey = "model_changed"
+	MsgModelChangeFailed       MsgKey = "model_change_failed"
+	MsgModelChangedSession     MsgKey = "model_changed_session"
+	MsgModelReset              MsgKey = "model_reset"
+	MsgModelCardSwitching      MsgKey = "model_card_switching"
+	MsgModelCardSwitched       MsgKey = "model_card_switched"
+	MsgModelCardSwitchFailed   MsgKey = "model_card_switch_failed"
+	MsgModelNotSupported       MsgKey = "model_not_supported"
+	MsgReasoningCurrent        MsgKey = "reasoning_current"
+	MsgReasoningChanged        MsgKey = "reasoning_changed"
+	MsgReasoningChangedSession MsgKey = "reasoning_changed_session"
+	MsgReasoningReset          MsgKey = "reasoning_reset"
+	MsgReasoningNotSupported   MsgKey = "reasoning_not_supported"
 
 	MsgCompressNotSupported MsgKey = "compress_not_supported"
 	MsgCompressing          MsgKey = "compressing"
@@ -378,31 +384,31 @@ const (
 	MsgCronIDLabel               MsgKey = "cron_id_label"
 	MsgCronFailedSuffix          MsgKey = "cron_failed_suffix"
 
-	MsgTimerNotAvailable  MsgKey = "timer_not_available"
-	MsgTimerUsage         MsgKey = "timer_usage"
-	MsgTimerAddUsage      MsgKey = "timer_add_usage"
-	MsgTimerAdded         MsgKey = "timer_added"
-	MsgTimerAddedExec     MsgKey = "timer_added_exec"
-	MsgTimerAddExecUsage  MsgKey = "timer_addexec_usage"
-	MsgTimerEmpty         MsgKey = "timer_empty"
-	MsgTimerListTitle     MsgKey = "timer_list_title"
-	MsgTimerListFooter    MsgKey = "timer_list_footer"
-	MsgTimerDelUsage      MsgKey = "timer_del_usage"
-	MsgTimerMuteUsage     MsgKey = "timer_mute_usage"
-	MsgTimerDeleted       MsgKey = "timer_deleted"
-	MsgTimerNotFound      MsgKey = "timer_not_found"
-	MsgTimerMuted         MsgKey = "timer_muted"
-	MsgTimerUnmuted       MsgKey = "timer_unmuted"
-	MsgTimerCardHint      MsgKey = "timer_card_hint"
-	MsgTimerBtnMute       MsgKey = "timer_btn_mute"
-	MsgTimerBtnUnmute     MsgKey = "timer_btn_unmute"
-	MsgTimerBtnDelete     MsgKey = "timer_btn_delete"
-	MsgTimerIDLabel       MsgKey = "timer_id_label"
-	MsgTimerScheduledLabel MsgKey = "timer_scheduled_label"
-	MsgTimerFailedSuffix  MsgKey = "timer_failed_suffix"
-	MsgCommandsTagAgent          MsgKey = "commands_tag_agent"
-	MsgCommandsTagShell          MsgKey = "commands_tag_shell"
-	MsgUpgradeTimeoutSuffix      MsgKey = "upgrade_timeout_suffix"
+	MsgTimerNotAvailable    MsgKey = "timer_not_available"
+	MsgTimerUsage           MsgKey = "timer_usage"
+	MsgTimerAddUsage        MsgKey = "timer_add_usage"
+	MsgTimerAdded           MsgKey = "timer_added"
+	MsgTimerAddedExec       MsgKey = "timer_added_exec"
+	MsgTimerAddExecUsage    MsgKey = "timer_addexec_usage"
+	MsgTimerEmpty           MsgKey = "timer_empty"
+	MsgTimerListTitle       MsgKey = "timer_list_title"
+	MsgTimerListFooter      MsgKey = "timer_list_footer"
+	MsgTimerDelUsage        MsgKey = "timer_del_usage"
+	MsgTimerMuteUsage       MsgKey = "timer_mute_usage"
+	MsgTimerDeleted         MsgKey = "timer_deleted"
+	MsgTimerNotFound        MsgKey = "timer_not_found"
+	MsgTimerMuted           MsgKey = "timer_muted"
+	MsgTimerUnmuted         MsgKey = "timer_unmuted"
+	MsgTimerCardHint        MsgKey = "timer_card_hint"
+	MsgTimerBtnMute         MsgKey = "timer_btn_mute"
+	MsgTimerBtnUnmute       MsgKey = "timer_btn_unmute"
+	MsgTimerBtnDelete       MsgKey = "timer_btn_delete"
+	MsgTimerIDLabel         MsgKey = "timer_id_label"
+	MsgTimerScheduledLabel  MsgKey = "timer_scheduled_label"
+	MsgTimerFailedSuffix    MsgKey = "timer_failed_suffix"
+	MsgCommandsTagAgent     MsgKey = "commands_tag_agent"
+	MsgCommandsTagShell     MsgKey = "commands_tag_shell"
+	MsgUpgradeTimeoutSuffix MsgKey = "upgrade_timeout_suffix"
 
 	MsgCronScheduleLabel MsgKey = "cron_schedule_label"
 	MsgCronNextRunLabel  MsgKey = "cron_next_run_label"
@@ -911,6 +917,20 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "🔄 權限模式已切換為 **%s**，新會話將使用此模式。",
 		LangJapanese:           "🔄 権限モードを **%s** に切り替えました。新しいセッションで有効になります。",
 		LangSpanish:            "🔄 Modo de permisos cambiado a **%s**. Las nuevas sesiones usarán este modo.",
+	},
+	MsgModeChangedSession: {
+		LangEnglish:            "🔄 Permission mode switched to **%s** for this session. A restart restores the previous default.",
+		LangChinese:            "🔄 权限模式已切换为 **%s**（仅当前会话生效，重启后恢复原有默认）。",
+		LangTraditionalChinese: "🔄 權限模式已切換為 **%s**（僅當前會話生效，重啟後恢復原有預設）。",
+		LangJapanese:           "🔄 権限モードを **%s** に切り替えました（このセッションのみ。再起動で元の既定に戻ります）。",
+		LangSpanish:            "🔄 Modo de permisos cambiado a **%s** para esta sesión. Un reinicio restaura el valor predeterminado anterior.",
+	},
+	MsgModeReset: {
+		LangEnglish:            "🔄 Restored default permission mode: **%s**",
+		LangChinese:            "🔄 已恢复默认权限模式 **%s**",
+		LangTraditionalChinese: "🔄 已恢復預設權限模式 **%s**",
+		LangJapanese:           "🔄 既定の権限モード **%s** に戻しました",
+		LangSpanish:            "🔄 Modo de permisos predeterminado restaurado: **%s**",
 	},
 	MsgModeNotSupported: {
 		LangEnglish:            "This agent does not support permission mode switching.",
@@ -2208,6 +2228,20 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "モデルを `%s` に切り替えました。新しいセッションで使用されます。",
 		LangSpanish:            "Modelo cambiado a `%s`. Las nuevas sesiones usarán este modelo.",
 	},
+	MsgModelChangedSession: {
+		LangEnglish:            "Model switched to `%s` for this session. A restart restores the project default (`%s`).",
+		LangChinese:            "模型已切换为 `%s`（仅当前会话生效，重启后恢复项目默认 `%s`）。",
+		LangTraditionalChinese: "模型已切換為 `%s`（僅當前會話生效，重啟後恢復項目預設 `%s`）。",
+		LangJapanese:           "モデルを `%s` に切り替えました（このセッションのみ。再起動でプロジェクト既定の `%s` に戻ります）。",
+		LangSpanish:            "Modelo cambiado a `%s` para esta sesión. Un reinicio restaura el modelo predeterminado del proyecto (`%s`).",
+	},
+	MsgModelReset: {
+		LangEnglish:            "Restored project default model: `%s`",
+		LangChinese:            "已恢复项目默认模型 `%s`",
+		LangTraditionalChinese: "已恢復項目預設模型 `%s`",
+		LangJapanese:           "プロジェクト既定のモデル `%s` に戻しました",
+		LangSpanish:            "Modelo predeterminado del proyecto restaurado: `%s`",
+	},
 	MsgModelChangeFailed: {
 		LangEnglish:            "❌ Failed to change model: %v",
 		LangChinese:            "❌ 切换模型失败: %v",
@@ -2256,6 +2290,20 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "推理強度已切換為 `%s`，新會話將使用此設定。",
 		LangJapanese:           "推論強度を `%s` に切り替えました。新しいセッションで使用されます。",
 		LangSpanish:            "Esfuerzo de razonamiento cambiado a `%s`. Las nuevas sesiones usarán esta configuración.",
+	},
+	MsgReasoningChangedSession: {
+		LangEnglish:            "Reasoning effort switched to `%s` for this session. A restart restores the project default.",
+		LangChinese:            "推理强度已切换为 `%s`（仅当前会话生效，重启后恢复项目默认）。",
+		LangTraditionalChinese: "推理強度已切換為 `%s`（僅當前會話生效，重啟後恢復項目預設）。",
+		LangJapanese:           "推論強度を `%s` に切り替えました（このセッションのみ。再起動でプロジェクト既定に戻ります）。",
+		LangSpanish:            "Esfuerzo de razonamiento cambiado a `%s` para esta sesión. Un reinicio restaura el valor predeterminado del proyecto.",
+	},
+	MsgReasoningReset: {
+		LangEnglish:            "Restored project default reasoning effort: `%s`",
+		LangChinese:            "已恢复项目默认推理强度 `%s`",
+		LangTraditionalChinese: "已恢復項目預設推理強度 `%s`",
+		LangJapanese:           "プロジェクト既定の推論強度 `%s` に戻しました",
+		LangSpanish:            "Esfuerzo de razonamiento predeterminado del proyecto restaurado: `%s`",
 	},
 	MsgReasoningNotSupported: {
 		LangEnglish:            "This agent does not support reasoning effort switching.",
@@ -2462,11 +2510,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Modelos disponibles:\n",
 	},
 	MsgModelUsage: {
-		LangEnglish:            "Usage: `/model switch <number>` or `/model switch <model_name>`",
-		LangChinese:            "用法: `/model switch <序号>` 或 `/model switch <模型名>`",
-		LangTraditionalChinese: "用法: `/model switch <序號>` 或 `/model switch <模型名>`",
-		LangJapanese:           "使い方: `/model switch <番号>` または `/model switch <モデル名>`",
-		LangSpanish:            "Uso: `/model switch <número>` o `/model switch <nombre_modelo>`",
+		LangEnglish:            "Usage: `/model switch <number>` or `/model switch <model_name>`; `/model default` restores the project default",
+		LangChinese:            "用法: `/model switch <序号>` 或 `/model switch <模型名>`；`/model default` 恢复项目默认",
+		LangTraditionalChinese: "用法: `/model switch <序號>` 或 `/model switch <模型名>`；`/model default` 恢復項目預設",
+		LangJapanese:           "使い方: `/model switch <番号>` または `/model switch <モデル名>`；`/model default` でプロジェクト既定に戻る",
+		LangSpanish:            "Uso: `/model switch <número>` o `/model switch <nombre_modelo>`; `/model default` restaura el predeterminado del proyecto",
 	},
 	MsgReasoningDefault: {
 		LangEnglish:            "Current reasoning effort: (not set, using Codex default)\n",
@@ -2483,18 +2531,18 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Niveles de razonamiento disponibles:\n",
 	},
 	MsgReasoningUsage: {
-		LangEnglish:            "Usage: `/reasoning <number>` or `/reasoning <low|medium|high|xhigh>`",
-		LangChinese:            "用法: `/reasoning <序号>` 或 `/reasoning <low|medium|high|xhigh>`",
-		LangTraditionalChinese: "用法: `/reasoning <序號>` 或 `/reasoning <low|medium|high|xhigh>`",
-		LangJapanese:           "使い方: `/reasoning <番号>` または `/reasoning <low|medium|high|xhigh>`",
-		LangSpanish:            "Uso: `/reasoning <número>` o `/reasoning <low|medium|high|xhigh>`",
+		LangEnglish:            "Usage: `/reasoning <number>` or `/reasoning <low|medium|high|xhigh>`; `/reasoning default` restores the project default",
+		LangChinese:            "用法: `/reasoning <序号>` 或 `/reasoning <low|medium|high|xhigh>`；`/reasoning default` 恢复项目默认",
+		LangTraditionalChinese: "用法: `/reasoning <序號>` 或 `/reasoning <low|medium|high|xhigh>`；`/reasoning default` 恢復項目預設",
+		LangJapanese:           "使い方: `/reasoning <番号>` または `/reasoning <low|medium|high|xhigh>`；`/reasoning default` でプロジェクト既定に戻る",
+		LangSpanish:            "Uso: `/reasoning <número>` o `/reasoning <low|medium|high|xhigh>`; `/reasoning default` restaura el predeterminado del proyecto",
 	},
 	MsgModeUsage: {
-		LangEnglish:            "\nUse `/mode <name>` to switch.\nAvailable: %s",
-		LangChinese:            "\n使用 `/mode <名称>` 切换模式\n可用值: %s",
-		LangTraditionalChinese: "\n使用 `/mode <名稱>` 切換模式\n可用值: %s",
-		LangJapanese:           "\n`/mode <名前>` で切り替え\n選択肢: %s",
-		LangSpanish:            "\nUse `/mode <nombre>` para cambiar.\nDisponibles: %s",
+		LangEnglish:            "\nUse `/mode <name>` to switch; `/mode default` restores the previous default.\nAvailable: %s",
+		LangChinese:            "\n使用 `/mode <名称>` 切换模式；`/mode default` 恢复原有默认\n可用值: %s",
+		LangTraditionalChinese: "\n使用 `/mode <名稱>` 切換模式；`/mode default` 恢復原有預設\n可用值: %s",
+		LangJapanese:           "\n`/mode <名前>` で切り替え；`/mode default` で元の既定に戻る\n選択肢: %s",
+		LangSpanish:            "\nUse `/mode <nombre>` para cambiar; `/mode default` restaura el predeterminado anterior.\nDisponibles: %s",
 	},
 	MsgLangSelectPlaceholder: {
 		LangEnglish: "Select language", LangChinese: "选择语言", LangTraditionalChinese: "選擇語言",

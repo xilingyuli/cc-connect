@@ -358,6 +358,16 @@ func (s *appServerSession) threadRequestParams() map[string]any {
 		"experimentalRawEvents":  false,
 		"persistExtendedHistory": false,
 	}
+	if workDir := strings.TrimSpace(s.GetWorkDir()); workDir != "" {
+		if absWorkDir, err := filepath.Abs(workDir); err == nil {
+			workDir = absWorkDir
+		}
+		// Codex resolves project-local .codex/config.toml (including
+		// [sandbox_workspace_write].writable_roots) from the thread cwd, not
+		// from the app-server process working directory. Without this the
+		// project sandbox settings silently never take effect.
+		params["cwd"] = workDir
+	}
 	if model := s.GetModel(); model != "" {
 		params["model"] = model
 	}

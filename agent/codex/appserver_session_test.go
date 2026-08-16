@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +28,27 @@ func TestAppServerSession_ApplyThreadRuntimeState(t *testing.T) {
 	}
 	if got := s.GetReasoningEffort(); got != "xhigh" {
 		t.Fatalf("GetReasoningEffort() = %q, want xhigh", got)
+	}
+}
+
+func TestAppServerSession_ThreadRequestParamsIncludesCwd(t *testing.T) {
+	workDir := t.TempDir()
+	s := &appServerSession{
+		workDir: workDir,
+		mode:    "full-auto",
+	}
+
+	params := s.threadRequestParams()
+
+	wantCwd, err := filepath.Abs(workDir)
+	if err != nil {
+		t.Fatalf("filepath.Abs(%q): %v", workDir, err)
+	}
+	if got := params["cwd"]; got != wantCwd {
+		t.Fatalf("thread/start params cwd = %#v, want %q", got, wantCwd)
+	}
+	if got := params["sandbox"]; got != "workspace-write" {
+		t.Fatalf("thread/start params sandbox = %#v, want workspace-write", got)
 	}
 }
 

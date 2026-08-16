@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -119,6 +120,84 @@ func New(opts map[string]any) (core.Agent, error) {
 		configEnv:       configEnv,
 		activeIdx:       -1,
 	}, nil
+}
+
+// CloneSession returns a deep-enough copy of the agent for use as a
+// per-session instance. Config maps/slices are copied so mutations on the
+// session agent never leak back into the shared project agent; runtime
+// session state (sessionEnv) starts empty for the new session.
+func (a *Agent) CloneSession() core.Agent {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	modeRules := make(map[string]string, len(a.modeRules))
+	for k, v := range a.modeRules {
+		modeRules[k] = v
+	}
+	workDirRules := make(map[string]string, len(a.workDirRules))
+	for k, v := range a.workDirRules {
+		workDirRules[k] = v
+	}
+	return &Agent{
+		workDir:         a.workDir,
+		model:           a.model,
+		reasoningEffort: a.reasoningEffort,
+		mode:            a.mode,
+		modeRules:       modeRules,
+		workDirRules:    workDirRules,
+		backend:         a.backend,
+		appServerURL:    a.appServerURL,
+		codexHome:       a.codexHome,
+		systemPrompt:    a.systemPrompt,
+		appendPrompt:    a.appendPrompt,
+		cmd:             a.cmd,
+		cliExtraArgs:    append([]string(nil), a.cliExtraArgs...),
+		providers:       append([]core.ProviderConfig(nil), a.providers...),
+		activeIdx:       a.activeIdx,
+		configEnv:       append([]string(nil), a.configEnv...),
+	}
+}
+
+// ResetModelFrom restores this session agent's model (and the active
+// provider's model) to the values carried by src, discarding any /model
+// override made in this session. src must be a codex Agent.
+func (a *Agent) ResetModelFrom(src core.Agent) {
+	base, ok := src.(*Agent)
+	if !ok {
+		return
+	}
+	base.mu.RLock()
+	defer base.mu.RUnlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.model = base.model
+	a.providers = append([]core.ProviderConfig(nil), base.providers...)
+	a.activeIdx = base.activeIdx
+}
+
+// ResetModeFrom restores this session agent's permission mode to src's value.
+func (a *Agent) ResetModeFrom(src core.Agent) {
+	base, ok := src.(*Agent)
+	if !ok {
+		return
+	}
+	base.mu.RLock()
+	defer base.mu.RUnlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.mode = base.mode
+}
+
+// ResetReasoningFrom restores this session agent's reasoning effort to src's.
+func (a *Agent) ResetReasoningFrom(src core.Agent) {
+	base, ok := src.(*Agent)
+	if !ok {
+		return
+	}
+	base.mu.RLock()
+	defer base.mu.RUnlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.reasoningEffort = base.reasoningEffort
 }
 
 func normalizeBackend(raw string) string {
@@ -606,6 +685,27 @@ func (a *Agent) ResolveMode(msg *core.Message) string {
 		if m, ok := a.modeRules[key]; ok {
 			return m
 		}
+		// Rule keys may be written as regex fragments (e.g.
+		// "(?:.*:)?qq:123" to let the private chat match under any /dir
+		// prefix). Each rule is matched as a full string, "^(" + key + ")$",
+		// so plain keys like "qq:g:123" still behave as exact matches and
+		// group rules never leak across directories. When several regex
+		// rules match, the longest one wins.
+		var reMode string
+		reLen := -1
+		for k, m := range a.modeRules {
+			if k == "*" || len(k) <= reLen {
+				continue
+			}
+			matched, err := regexp.MatchString("^(?:"+k+")$", key)
+			if err == nil && matched {
+				reMode = m
+				reLen = len(k)
+			}
+		}
+		if reMode != "" {
+			return reMode
+		}
 		if i := strings.LastIndex(key, ":"); i > 0 {
 			if m, ok := a.modeRules[key[:i]]; ok {
 				return m
@@ -649,6 +749,13 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	opts := map[string]any{
 		"mode":    a.mode,
 		"backend": a.backend,
+	}
+	if len(a.modeRules) > 0 {
+		rules := make(map[string]string, len(a.modeRules))
+		for k, v := range a.modeRules {
+			rules[k] = v
+		}
+		opts["mode_rules"] = rules
 	}
 	if a.model != "" {
 		opts["model"] = a.model
