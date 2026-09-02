@@ -5862,6 +5862,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 			// Deliver the remaining batch replies as separate messages.
 			for _, part := range extraReplies {
+				if strings.TrimSpace(part) == "" {
+					continue
+				}
 				if !sendChunksWithStatusFooter(e.ctx, p, replyCtx, part, "", sendWorkspaceWithError) {
 					return
 				}
@@ -10614,13 +10617,21 @@ func (e *Engine) cmdAllow(p Platform, msg *Message, args []string) {
 }
 
 func (e *Engine) cmdProvider(p Platform, msg *Message, args []string) {
-	agent, sessions, _, err := e.commandContext(p, msg)
+	base, sessions, interactiveKey, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
 	}
 
-	switcher, ok := agent.(ProviderSwitcher)
+	// Provider DEFINITIONS (add/remove) are project-global, so they operate on
+	// the shared base agent. Provider SELECTION (switch/clear) must be per-session
+	// so it never pollutes the shared project agent; use the per-session clone.
+	baseSwitcher, ok := base.(ProviderSwitcher)
+	if !ok {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProviderNotSupported))
+		return
+	}
+	switcher, ok := e.sessionAgentFor(interactiveKey, base).(ProviderSwitcher)
 	if !ok {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProviderNotSupported))
 		return
@@ -10695,10 +10706,10 @@ func (e *Engine) cmdProvider(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, sb.String())
 
 	case "add":
-		e.cmdProviderAdd(p, msg, switcher, args[1:])
+		e.cmdProviderAdd(p, msg, baseSwitcher, args[1:])
 
 	case "remove", "rm", "delete":
-		e.cmdProviderRemove(p, msg, switcher, args[1:])
+		e.cmdProviderRemove(p, msg, baseSwitcher, args[1:])
 
 	case "switch":
 		if len(args) < 2 {
@@ -10724,13 +10735,6 @@ func (e *Engine) cmdProvider(p Platform, msg *Message, args []string) {
 			s.ClearHistory()
 			s.SetActiveProvider("")
 			sessions.Save()
-		}
-		// Only persist to global config when operating on the global agent;
-		// in workspace mode the provider state lives on the per-workspace agent.
-		if sessions == e.sessions && e.providerSaveFunc != nil {
-			if err := e.providerSaveFunc(""); err != nil {
-				slog.Error("failed to save provider", "error", err)
-			}
 		}
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProviderCleared))
 
@@ -10895,14 +10899,6 @@ func (e *Engine) switchProvider(p Platform, msg *Message, sessions *SessionManag
 	// internal task t-20260614-qp7xnl.
 	s.SetActiveProvider(name)
 	sessions.Save()
-
-	// Only persist to global config when operating on the global agent;
-	// in workspace mode the provider state lives on the per-workspace agent.
-	if sessions == e.sessions && e.providerSaveFunc != nil {
-		if err := e.providerSaveFunc(name); err != nil {
-			slog.Error("failed to save provider", "error", err)
-		}
-	}
 
 	e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgProviderSwitched), name))
 }
@@ -12385,7 +12381,7 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if args == "" {
 			return
 		}
-		switcher, ok := e.agent.(ProviderSwitcher)
+		switcher, ok := e.sessionAgentFor(interactiveKey, e.agent).(ProviderSwitcher)
 		if !ok {
 			return
 		}
@@ -12398,10 +12394,8 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 			s := e.sessions.GetOrCreateActive(sessionKey)
 			s.SetAgentSessionID("", "")
 			s.ClearHistory()
+			s.SetActiveProvider(provName)
 			e.sessions.Save()
-			if e.providerSaveFunc != nil {
-				_ = e.providerSaveFunc(provName)
-			}
 		}
 
 	case "/provider/add":
